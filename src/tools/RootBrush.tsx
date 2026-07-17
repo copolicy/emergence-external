@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import AspectRatioControl from "../components/AspectRatioControl";
-import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
-import RecordButton from "../components/RecordButton";
+import ToolRailControls from "../components/ToolRailControls";
 import { useAnimProgress, useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
 import {
@@ -118,8 +117,7 @@ export default function RootBrush({
       drawDpr = cssDpr;
     }
 
-    canvas.style.setProperty("--canvas-ar-w", String(w));
-    canvas.style.setProperty("--canvas-ar-h", String(h));
+    setCanvasAspectVars(canvas, w, h);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     drawRoots(
@@ -341,117 +339,58 @@ export default function RootBrush({
     );
   };
 
-  const colorRow = (
-    label: string,
-    value: string,
-    fallback: string,
-    onChange: (v: string) => void,
-  ) => (
-    <label className="tool-param-row tool-color-row">
-      <span className="tool-param-row__label">{label}</span>
-      <span className="tool-color-row__inputs">
-        <input
-          type="color"
-          className="tool-color-row__swatch"
-          value={safeColor(value, fallback)}
-          onChange={(e) => onChange(e.target.value)}
-          aria-label={`${label} swatch`}
-        />
-        <input
-          type="text"
-          className="tool-color-row__hex"
-          value={value}
-          spellCheck={false}
-          maxLength={7}
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange(v.startsWith("#") ? v : `#${v}`);
-          }}
-          aria-label={`${label} hex code`}
-        />
-      </span>
-    </label>
-  );
+  const brushHeader = !hideBrushToggle ? (
+    <div className="specimen-tree__group">
+      <span className="specimen-tree__group-title">Brush</span>
+      <div
+        role="group"
+        aria-label="Brush"
+        style={{ display: "flex", gap: 4 }}
+      >
+        {BRUSHES.map((b) => (
+          <button
+            key={b.id}
+            type="button"
+            className={`btn${brush === b.id ? " is-active" : ""}`}
+            aria-pressed={brush === b.id}
+            onClick={() => setBrush(b.id)}
+            style={{ flex: 1, justifyContent: "center" }}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   const controls = (
-    <>
-      {!hideBrushToggle && (
-        <div className="specimen-tree__group">
-          <span className="specimen-tree__group-title">Brush</span>
-          <div
-            role="group"
-            aria-label="Brush"
-            style={{ display: "flex", gap: 4 }}
-          >
-            {BRUSHES.map((b) => (
-              <button
-                key={b.id}
-                type="button"
-                className={`btn${brush === b.id ? " is-active" : ""}`}
-                aria-pressed={brush === b.id}
-                onClick={() => setBrush(b.id)}
-                style={{ flex: 1, justifyContent: "center" }}
-              >
-                {b.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="specimen-tree__group">
-        <span className="specimen-tree__group-title">Canvas</span>
-        <AspectRatioControl value={config} onChange={setConfig} />
-      </div>
-
-      <div className="specimen-tree__group rail-section">
-        <div className="specimen-tree__sliders">
-          {SLIDER_KEYS_SIMPLE.map(renderRow)}
-        </div>
-      </div>
-
-      <div className="specimen-tree__group">
-        {colorRow("Stroke Color", ink, INK, setInk)}
-        {colorRow("Background", background, BG, setBackground)}
-      </div>
-
-      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
-        <ExportButtons
-          onPNG={downloadPNG}
-          onSVG={downloadSVG}
-          disabled={!hasOutput}
-        />
-        <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
-      </div>
-
-      <div className="specimen-tree__actions rail-section">
-        <button
-          type="button"
-          className={`btn${growing ? " is-active" : ""}`}
-          onClick={toggleGrow}
-          disabled={!hasOutput}
-        >
-          {growing ? (
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="5" width="4" height="14" rx="1" />
-              <rect x="14" y="5" width="4" height="14" rx="1" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          )}
-          {growing ? "Growing…" : "Grow"}
-        </button>
-        <button type="button" className="btn" onClick={reset}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 12a9 9 0 1 0 3-6.7" />
-            <path d="M3 4v5h5" />
-          </svg>
-          Reset
-        </button>
-      </div>
-    </>
+    <ToolRailControls
+      header={brushHeader}
+      config={config}
+      onConfigChange={setConfig}
+      sliders={SLIDER_KEYS_SIMPLE.map(renderRow)}
+      ink={ink}
+      background={background}
+      inkFallback={INK}
+      bgFallback={BG}
+      onInkChange={setInk}
+      onBackgroundChange={setBackground}
+      strokeTip="Color of the root strokes."
+      backgroundTip="Canvas background color behind the roots."
+      onPNG={downloadPNG}
+      onSVG={downloadSVG}
+      exportDisabled={!hasOutput}
+      recording={recorder.recording}
+      recordSupported={recorder.supported}
+      onStartRecord={startRecord}
+      onStopRecord={stopRecord}
+      playing={growing}
+      onTogglePlay={toggleGrow}
+      playDisabled={!hasOutput}
+      playLabel="Grow"
+      playingLabel="Growing…"
+      onReset={reset}
+    />
   );
 
   return (

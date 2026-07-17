@@ -26,6 +26,23 @@ export const DEFAULT_SIZE_CONFIG: CanvasSizeConfig = {
   presetId: DEFAULT_PRESET_ID,
 };
 
+/** Publish preview aspect ratio for CSS (panel + canvas share --tool-stage-h). */
+export function setCanvasAspectVars(
+  canvas: HTMLCanvasElement,
+  w: number,
+  h: number,
+) {
+  const ww = String(w);
+  const hh = String(h);
+  canvas.style.setProperty("--canvas-ar-w", ww);
+  canvas.style.setProperty("--canvas-ar-h", hh);
+  const body = canvas.closest(".app-body") as HTMLElement | null;
+  if (body) {
+    body.style.setProperty("--canvas-ar-w", ww);
+    body.style.setProperty("--canvas-ar-h", hh);
+  }
+}
+
 export const MIN_EXPORT_DIM = 320;
 export const MAX_EXPORT_DIM = 4096;
 

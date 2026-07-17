@@ -13,7 +13,7 @@ body {
 }
 
 body {
-  background: var(--copo-white);
+  background: var(--bg);
   color: var(--ink);
   font-family: var(--font-body);
   font-size: 15px;
@@ -126,6 +126,12 @@ button {
 
 /* App body: a left mode rail + the active tool. */
 .app-body {
+  /* Shared stage size — panel and canvas match. Capped so a 1:1 canvas
+     fits beside the 300px rail without overflowing. */
+  --tool-stage-h: min(
+    calc(100vh - 160px),
+    calc((100vw - 392px) * var(--canvas-ar-h, 1) / var(--canvas-ar-w, 1))
+  );
   flex: 1;
   display: flex;
   align-items: flex-start;
@@ -140,6 +146,9 @@ button {
   flex: 1;
   min-width: 0;
   background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 /* Mode rail — the nested Branch/Field · Organic/Engineered · Topographic
@@ -168,9 +177,9 @@ button {
 .mode-rail__label {
   font-family: var(--font-subhead);
   font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  text-transform: none;
   color: var(--ink-muted);
 }
 
@@ -186,7 +195,10 @@ button {
 }
 
 .mode-rail__panel--tool {
-  max-height: calc(100vh - 160px);
+  /* Keep Branch ↔ Field from resizing the card; spare height is empty space.
+     Height matches the canvas stage beside it. */
+  height: var(--tool-stage-h);
+  max-height: var(--tool-stage-h);
   overflow-y: auto;
 }
 
@@ -195,6 +207,8 @@ button {
 }
 
 .mode-rail__tool-controls {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -227,13 +241,29 @@ button {
 }
 
 .mode-rail__tool-controls .aspect-size .export-menu {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
 }
 
 .mode-rail__tool-controls .aspect-size .export-menu > .btn {
-  width: 100%;
-  justify-content: space-between;
+  width: auto;
+  justify-content: center;
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  gap: 2px;
+}
+
+.mode-rail__tool-controls .aspect-size .export-menu > .btn svg:first-of-type {
+  display: none;
+}
+
+.mode-rail__tool-controls .aspect-size .export-menu > .btn svg {
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  min-height: 12px;
+  flex-shrink: 0;
 }
 
 .mode-rail__tool-controls .specimen-tree__sliders {
@@ -262,25 +292,25 @@ button {
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export {
-  display: flex;
-  flex-wrap: nowrap;
+  /* Pin export + play/reset to the bottom; empty space sits above. */
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export .export-menu {
-  flex: 1 1 0;
-  min-width: 0;
   display: flex;
+  min-width: 0;
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export .export-menu > .btn,
 .mode-rail__tool-controls .specimen-tree__actions--export > .btn {
-  flex: 1 1 0;
-  min-width: 0;
   width: 100%;
   justify-content: center;
-  padding-left: 8px;
-  padding-right: 8px;
+  padding-left: 10px;
+  padding-right: 10px;
+  box-sizing: border-box;
 }
 
 .mode-rail__tool-controls .tool-param-row {
@@ -310,7 +340,7 @@ button {
   padding: 7px 12px;
   font-family: var(--font-subhead);
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--ink-muted);
@@ -331,12 +361,30 @@ button {
 }
 
 .seg__opt--active {
+  color: var(--c-white);
+  background: var(--c-dark-green);
+}
+
+.seg__opt--active:hover {
+  color: var(--c-white);
+  background: var(--c-mid-green);
+}
+
+/* Nested brush / style toggles — gold instead of dark green. */
+.seg--alt .seg__opt {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.seg--alt .seg__opt--active {
   color: var(--hero-ink);
   background: var(--hero);
 }
 
-.seg__opt--active:hover {
+.seg--alt .seg__opt--active:hover {
   color: var(--hero-ink);
+  background: var(--hero);
 }
 
 /* On/off switch (Topographic). */
@@ -534,7 +582,7 @@ button {
   border-radius: var(--border-radius-md);
   overflow: hidden;
   margin-bottom: 16px;
-  background: var(--bg-subtle, #f3f2ee);
+  background: var(--c-cream, #f5f5f2);
   border: 1px solid var(--border);
 }
 
@@ -888,6 +936,9 @@ button {
 .btn svg {
   width: 16px;
   height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  flex-shrink: 0;
 }
 
 /* Shared export dropdown (PNG / SVG) */
@@ -900,7 +951,10 @@ button {
 .export-menu__caret {
   width: 14px !important;
   height: 14px !important;
+  min-width: 14px !important;
+  min-height: 14px !important;
   margin-left: 2px;
+  flex-shrink: 0;
 }
 
 .export-menu__list {
@@ -950,21 +1004,21 @@ button {
 
 .aspect-size {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   width: 100%;
 }
 
 .aspect-size .export-menu {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
 }
 
 .aspect-size__custom {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
   flex: 0 0 auto;
 }
 
@@ -975,24 +1029,25 @@ button {
 .aspect-size__dim {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .aspect-size__dim-label {
-  flex: 0 0 0.85em;
+  flex: 0 0 auto;
   font-family: var(--font-subhead);
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 500;
   color: var(--ink-muted);
   text-align: right;
 }
 
 .export-menu__dim-input {
-  width: 56px;
+  width: 3.75rem;
+  min-width: 3.75rem;
   padding: 5px 6px;
   border: 1px solid var(--border);
   border-radius: var(--border-radius-sm, 4px);
-  background: #f3f3f3;
+  background: var(--c-cream, #f5f5f2);
   color: var(--ink);
   font-family: var(--font-subhead);
   font-size: 0.75rem;
@@ -1249,6 +1304,29 @@ button {
 /* Canvas-only (controls live in the mode-rail panel). */
 .specimen-tree--viewport:not(.specimen-tree--wide-controls) {
   grid-template-columns: 1fr;
+  /* Same height as the left panel; width follows the canvas aspect ratio. */
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  height: var(--tool-stage-h);
+  max-height: var(--tool-stage-h);
+  min-height: 0;
+  width: min(
+    100%,
+    calc(var(--tool-stage-h) * var(--canvas-ar-w, 1) / var(--canvas-ar-h, 1))
+  );
+  overflow: hidden;
+}
+
+.specimen-tree--viewport:not(.specimen-tree--wide-controls) .specimen-tree__canvas-wrap {
+  height: 100%;
+  width: 100%;
+}
+
+.specimen-tree--viewport:not(.specimen-tree--wide-controls) .specimen-tree__canvas {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: unset;
 }
 
 .specimen-tree__controls {

@@ -27,59 +27,30 @@ const TOOLS: ToolDef[] = [
 
 type Family = 'branch' | 'field';
 type Brush = 'organic' | 'engineered';
+type Style = 'abstract' | 'topographic';
 
-/** Field tools mirror Branch's brush toggle: Organic → Fingerprint, Engineered → Jagged. */
-const FIELD_BY_BRUSH: Record<Brush, string> = {
-  organic: 'flow-field',
-  engineered: 'jagged',
+/** Field tools by brush × style. */
+const FIELD_TOOL: Record<Brush, Record<Style, string>> = {
+  organic: { abstract: 'flow-field', topographic: 'contour' },
+  engineered: { abstract: 'jagged', topographic: 'road-colors' },
 };
 
 export default function App() {
-  // Nested-toggle nav state. `family` is Branch vs Field; under either, the
-  // brush toggle (organic/engineered) picks the tool. Engineered + Topographic
-  // routes to Map on both Branch and Field.
+  // Nested-toggle nav. Branch/Field × Organic/Engineered × Abstract/Topographic.
   const [family, setFamily] = useState<Family>('branch');
   const [brush, setBrush] = useState<Brush>('organic');
-  const [topographic, setTopographic] = useState(false);
+  const [style, setStyle] = useState<Style>('abstract');
   const [toolControlsHost, setToolControlsHost] = useState<HTMLElement | null>(null);
 
-  const showTopoSwitch = brush === 'engineered';
-  const showMap = showTopoSwitch && topographic;
-  // Keep the wide rail + panel card when Topographic opens Map so the layout
-  // doesn't jump (Map controls portal into the same host as other tools).
   const withToolPanel = family === 'branch' || family === 'field';
 
-  // Organic never carries a topographic view, so drop it when leaving engineered.
-  const selectBrush = (b: Brush) => {
-    setBrush(b);
-    if (b !== 'engineered') setTopographic(false);
-  };
-
   // Resolve the nav state to the active tool.
-  const activeId = showMap
-    ? 'road-colors'
-    : family === 'field'
-      ? FIELD_BY_BRUSH[brush]
-      : 'root-brush';
+  const activeId = (() => {
+    if (family === 'field') return FIELD_TOOL[brush][style];
+    return 'root-brush';
+  })();
   const active = TOOLS.find((t) => t.id === activeId) ?? TOOLS[0];
   const Active = active.Component;
-
-  const topoSwitch = showTopoSwitch && (
-    <div className="mode-rail__group">
-      <div className="switch-row">
-        <span className="switch-row__label">Topographic</span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={topographic}
-          className={`switch${topographic ? ' is-on' : ''}`}
-          onClick={() => setTopographic((v) => !v)}
-        >
-          <span className="switch__knob" />
-        </button>
-      </div>
-    </div>
-  );
 
   return (
     <div className="app-shell">
@@ -98,35 +69,35 @@ export default function App() {
           className={`mode-rail${withToolPanel ? ' mode-rail--with-tool' : ''}`}
           aria-label="Mode"
         >
-          <div className="mode-rail__group">
-            <span className="mode-rail__label">mode</span>
-            <div className="seg" role="group" aria-label="Branch or field">
-              {(['branch', 'field'] as Family[]).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={`seg__opt${f === family ? ' seg__opt--active' : ''}`}
-                  aria-pressed={f === family}
-                  onClick={() => setFamily(f)}
-                >
-                  {f === 'branch' ? 'Branch' : 'Field'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {family === 'branch' && (
+          {withToolPanel && (
             <div className="mode-rail__panel mode-rail__panel--tool">
               <div className="mode-rail__group">
-                <span className="mode-rail__label">brush</span>
-                <div className="seg" role="group" aria-label="Brush">
+                <span className="mode-rail__label">Mode</span>
+                <div className="seg" role="group" aria-label="Branch or field">
+                  {(['branch', 'field'] as Family[]).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={`seg__opt${f === family ? ' seg__opt--active' : ''}`}
+                      aria-pressed={f === family}
+                      onClick={() => setFamily(f)}
+                    >
+                      {f === 'branch' ? 'Branch' : 'Field'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mode-rail__group">
+                <span className="mode-rail__label">Brush</span>
+                <div className="seg seg--alt" role="group" aria-label="Brush">
                   {(['organic', 'engineered'] as Brush[]).map((b) => (
                     <button
                       key={b}
                       type="button"
                       className={`seg__opt${b === brush ? ' seg__opt--active' : ''}`}
                       aria-pressed={b === brush}
-                      onClick={() => selectBrush(b)}
+                      onClick={() => setBrush(b)}
                     >
                       {b === 'organic' ? 'Organic' : 'Engineered'}
                     </button>
@@ -134,36 +105,23 @@ export default function App() {
                 </div>
               </div>
 
-              {topoSwitch}
-
-              {/* Active tool sliders / actions land here via portal. */}
-              <div
-                ref={setToolControlsHost}
-                className="mode-rail__tool-controls"
-              />
-            </div>
-          )}
-
-          {family === 'field' && (
-            <div className="mode-rail__panel mode-rail__panel--tool">
-              <div className="mode-rail__group">
-                <span className="mode-rail__label">brush</span>
-                <div className="seg" role="group" aria-label="Brush">
-                  {(['organic', 'engineered'] as Brush[]).map((b) => (
-                    <button
-                      key={b}
-                      type="button"
-                      className={`seg__opt${b === brush ? ' seg__opt--active' : ''}`}
-                      aria-pressed={b === brush}
-                      onClick={() => selectBrush(b)}
-                    >
-                      {b === 'organic' ? 'Organic' : 'Engineered'}
-                    </button>
-                  ))}
+              {family === 'field' && (
+                <div className="mode-rail__group">
+                  <div className="seg seg--alt" role="group" aria-label="Style">
+                    {(['abstract', 'topographic'] as Style[]).map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`seg__opt${s === style ? ' seg__opt--active' : ''}`}
+                        aria-pressed={s === style}
+                        onClick={() => setStyle(s)}
+                      >
+                        {s === 'abstract' ? 'Abstract' : 'Topographic'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-
-              {topoSwitch}
+              )}
 
               {/* Active tool sliders / actions land here via portal. */}
               <div
@@ -181,7 +139,7 @@ export default function App() {
             <RootBrush
               key="root-brush"
               brush={brush}
-              onBrushChange={selectBrush}
+              onBrushChange={setBrush}
               hideBrushToggle
               controlsTarget={toolControlsHost}
             />

@@ -1,7 +1,7 @@
 export const W = 680;
 export const H = 580;
 export const INK = "#00280F";
-export const DEFAULT_FOLIAGE_COLOR = "#2e4c30";
+export const DEFAULT_FOLIAGE_COLOR = "#509137";
 
 export interface TreeParams {
   seed: number;

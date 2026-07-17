@@ -46,15 +46,6 @@ export default function ExportButtons({ onPNG, onSVG, disabled }: ExportButtonsP
         >
           <DownloadIcon />
           PNG
-          <svg
-            className="export-menu__caret"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
         </button>
         {open && (
           <div className="export-menu__list" role="menu">

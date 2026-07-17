@@ -1,65 +1,59 @@
 /*
  * Emergence / COPO brand tokens
- * Palette: Direction 1 (adopted June 2026)
- * Hero ("home jersey"): Chartreuse #CFEE46
+ * Palette: White · Gold · Dark Green · Cream · Gray · Mid/Light/Pale Green · Black
  *
- * Chartreuse is the brand signature. It is used as a FILL / FIELD / HIGHLIGHT
- * with dark ink on top — never as small text on a light ground, where it
- * fails contrast. For legible interactive text and borders, use --accent
- * (Forest). The generative tools should expose a strict two-color mode:
- * --hero on --ink (or --ink on --hero).
+ * Gold is the highlight fill (segmented controls, switches) with dark ink on top.
+ * Dark green is the primary interactive / tool stroke accent.
+ * Cream is the page ground; pale green is the generative canvas default.
  *
  * Typography:
  *   - Helvetica Neue — display, UI, and body
  */
 
 :root {
-  /* ── Direction 1 palette (named) ───────────────────────────── */
+  /* ── Named palette ─────────────────────────────────────────── */
   --c-white: #ffffff;
-  --c-sand: #faf4ef;
-  --c-stone: #c5c1b8;
-  --c-lime: #c8df9a;
-  --c-chartreuse: #cfee46;
-  --c-clay: #96904f;
-  --c-seafoam: #5f7767;
-  --c-forest: #242c1f;
-  --c-lavender: #9a678a;
-  --c-sky: #6095ea;
+  --c-gold: #c0b663;
+  --c-dark-green: #00280f;
+  --c-cream: #f5f5f2;
+  --c-light-gray: #808080;
+  --c-mid-green: #195519;
+  --c-dark-gray: #808080;
+  --c-light-green: #509137;
   --c-black: #000000;
+  --c-pale-green: #ebfadc;
 
-  /* ── Hero ──────────────────────────────────────────────────── */
-  --hero: var(--c-chartreuse);
-  --hero-ink: var(--c-black);            /* text that sits ON chartreuse */
-  --hero-soft: rgba(207, 238, 70, 0.18);
-  --hero-tint: var(--c-lime);            /* softer companion to the hero */
+  /* ── Hero (highlight fill) ─────────────────────────────────── */
+  --hero: var(--c-gold);
+  --hero-ink: var(--c-dark-green);
+  --hero-soft: rgba(192, 182, 99, 0.22);
+  --hero-tint: var(--c-pale-green);
 
   /* ── Semantic aliases ──────────────────────────────────────── */
-  --bg: var(--c-sand);
+  --bg: var(--c-cream);
   --bg-elevated: var(--c-white);
   --ink: var(--c-black);
   --ink-muted: rgba(0, 0, 0, 0.55);
 
-  /* Interactive / text accent — kept legible (Forest), since the hero
-     chartreuse cannot carry text on a light ground. */
-  --accent: var(--c-forest);
-  --accent-hover: #1a2016;
-  --accent-soft: rgba(36, 44, 31, 0.1);
+  /* Interactive accent — dark green, legible on cream/white. */
+  --accent: var(--c-dark-green);
+  --accent-hover: var(--c-mid-green);
+  --accent-soft: rgba(0, 40, 15, 0.1);
 
-  /* Organic / supporting */
-  --nature: var(--c-seafoam);
-  --nature-soft: rgba(95, 119, 103, 0.14);
+  /* Organic / supporting greens */
+  --nature: var(--c-mid-green);
+  --nature-soft: rgba(25, 85, 25, 0.12);
 
   --border: rgba(0, 0, 0, 0.1);
 
-  /* ── Legacy aliases (remapped to the new palette so existing
-        components shift cohesively; prefer the tokens above) ──── */
+  /* ── Legacy aliases ────────────────────────────────────────── */
   --copo-white: var(--c-white);
-  --copo-off-white: var(--c-sand);
+  --copo-off-white: var(--c-cream);
   --copo-black: var(--c-black);
-  --copo-blue: var(--c-sky);
-  --copo-blue-bright: var(--c-sky);
-  --copo-evergreen: var(--c-forest);
-  --copo-earth-red: var(--c-clay);
+  --copo-blue: var(--c-mid-green);
+  --copo-blue-bright: var(--c-light-green);
+  --copo-evergreen: var(--c-dark-green);
+  --copo-earth-red: var(--c-gold);
 
   /* ── Typography ────────────────────────────────────────────── */
   --font-display: 'Helvetica Neue', Helvetica, Arial, sans-serif;

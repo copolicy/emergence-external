@@ -5,15 +5,13 @@ import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
 import RecordButton from "../components/RecordButton";
 import { useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
-import { EXPORT_WIDTH } from "./aspectRatio";
+import { EXPORT_WIDTH, setCanvasAspectVars } from "./aspectRatio";
 import { renderPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
 import { makeDissolve, strokeRuns, svgRuns } from "./dissolveFade";
 import {
   REVEAL_ORDER,
   buildShapeMask,
-  fetchRoads,
-  geocode,
   isArterialHighway,
   loadSnapshot,
   makeProjector,
@@ -25,6 +23,9 @@ import {
 } from "./roadColorsCore";
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+
+/** Fixed fill-in animation duration (seconds). */
+const FILL_IN_SEC = 3;
 
 // Stable per-road key from its first coordinate, so the fade thins the same
 // roads whether drawn to canvas (ordered by reveal) or SVG (grouped by type).
@@ -95,13 +96,9 @@ export default function RoadColors({
   const roadsDrawnRef = useRef(0);
   const [animating, setAnimating] = useState(false);
 
-  const [place, setPlace] = useState("San Francisco, California");
-  const [radiusKm, setRadiusKm] = useState(6);
   const [weight, setWeight] = useState(1.1);
-  const [speed, setSpeed] = useState(3); // seconds for the fill-in
   const [bg, setBg] = useState(BG);
   const [ink, setInk] = useState(INK);
-  const [hideHighways, setHideHighways] = useState(true);
   const [fade, setFade] = useState(true);
 
   // View transform — zoom about the centre + pan in px. Decoupled from the
@@ -129,15 +126,11 @@ export default function RoadColors({
     [weight],
   );
 
-  const keepWay = useCallback(
-    (w: RoadWay) => {
-      if (!hideHighways) return true;
-      if (HIGHWAY_TIER.includes(w.designation)) return false;
-      if (isArterialHighway(w.highway)) return false;
-      return true;
-    },
-    [hideHighways],
-  );
+  const keepWay = useCallback((w: RoadWay) => {
+    if (HIGHWAY_TIER.includes(w.designation)) return false;
+    if (isArterialHighway(w.highway)) return false;
+    return true;
+  }, []);
 
   // Draw one already-projected way.
   const drawWay = useCallback(
@@ -267,6 +260,7 @@ export default function RoadColors({
       const dpr = window.devicePixelRatio || 1;
       canvas.width = SIZE * dpr;
       canvas.height = SIZE * dpr;
+      setCanvasAspectVars(canvas, SIZE, SIZE);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
@@ -282,7 +276,7 @@ export default function RoadColors({
       if (useMask) roadsCtx.clearRect(0, 0, SIZE, SIZE);
 
       const dissolve = fade ? makeDissolve(SIZE, SIZE, { seed: 7 }) : null;
-      const frames = Math.max(1, Math.round(speed * 60));
+      const frames = Math.max(1, Math.round(FILL_IN_SEC * 60));
       const perFrame = Math.max(1, Math.ceil(ordered.length / frames));
       let i = 0;
       const step = () => {
@@ -311,7 +305,6 @@ export default function RoadColors({
     },
     [
       bg,
-      speed,
       prepare,
       drawWay,
       view,
@@ -335,6 +328,7 @@ export default function RoadColors({
       const dpr = window.devicePixelRatio || 1;
       canvas.width = SIZE * dpr;
       canvas.height = SIZE * dpr;
+      setCanvasAspectVars(canvas, SIZE, SIZE);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       prepare(ctx, dpr, safeColor(bg, BG));
@@ -390,20 +384,6 @@ export default function RoadColors({
     if (d) renderStatic(d);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weight, bg, view, shapeMask, ink, fade]);
-
-  // Changing the highways filter replays the fill-in, so the new network
-  // visibly grows in rather than snapping. (Pure style tweaks above — colour,
-  // weight, zoom — stay instant.) Skip on the very first mount, where the
-  // data-load effect already handles the opening animation.
-  const didMountFilter = useRef(false);
-  useEffect(() => {
-    if (!didMountFilter.current) {
-      didMountFilter.current = true;
-      return;
-    }
-    if (dataRef.current) animate(dataRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keepWay]);
 
   // New shape → replay fill-in so roads grow into the silhouette.
   const didMountShape = useRef(false);
@@ -569,49 +549,6 @@ export default function RoadColors({
     setShapeImageName("");
   };
 
-  const load = useCallback(async () => {
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-    try {
-      let lat: number;
-      let lon: number;
-      let label = place;
-      const coord = place.match(
-        /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/,
-      );
-      if (coord) {
-        lat = parseFloat(coord[1]);
-        lon = parseFloat(coord[2]);
-      } else {
-        setStatus({ kind: "loading", msg: "Finding place…" });
-        const g = await geocode(place);
-        lat = g.lat;
-        lon = g.lon;
-        label = g.label;
-      }
-      setStatus({ kind: "loading", msg: "Fetching roads from OpenStreetMap…" });
-      const d = await fetchRoads(lat, lon, radiusKm * 1000, label, ac.signal);
-      if (ac.signal.aborted) return;
-      if (!d.ways.length) {
-        setStatus({
-          kind: "error",
-          msg: "No roads found here. Try a larger radius.",
-        });
-        return;
-      }
-      setView(DEFAULT_VIEW);
-      setData(d);
-      setStatus({ kind: "ready" });
-    } catch (e) {
-      if (ac.signal.aborted) return;
-      setStatus({
-        kind: "error",
-        msg: (e as Error).message || "Something went wrong.",
-      });
-    }
-  }, [place, radiusKm]);
-
   // ----- exports -----
   const download = (blob: Blob, ext: string) => {
     const url = URL.createObjectURL(blob);
@@ -703,55 +640,7 @@ export default function RoadColors({
 
   const controls = (
     <>
-      <label className="tool-param-row">
-        <span className="tool-param-row__label">City</span>
-        <input
-          type="text"
-          value={place}
-          spellCheck={false}
-          onChange={(e) => setPlace(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") load();
-          }}
-          style={{
-            width: "100%",
-            font: "inherit",
-            padding: "8px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--hairline, #d8d4cc)",
-            background: "transparent",
-          }}
-        />
-      </label>
-
       <div className="specimen-tree__group">
-        <span className="specimen-tree__group-title">Area</span>
-        {slider("Radius", radiusKm, 1, 24, 0.5, setRadiusKm, " km")}
-        <div
-          className="specimen-tree__actions"
-          style={{ flexWrap: "wrap" }}
-        >
-          <button
-            type="button"
-            className="btn"
-            onClick={loadSaved}
-            disabled={loading}
-          >
-            SF (saved)
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={load}
-            disabled={loading}
-          >
-            {loading ? "Loading…" : "Fetch this place"}
-          </button>
-        </div>
-      </div>
-
-      <div className="specimen-tree__group rail-section">
-        <span className="specimen-tree__group-title">Render</span>
         <label
           className="tool-param-row has-tip"
           data-tip="Thin the roads from dense to sparse toward the bottom"
@@ -783,35 +672,7 @@ export default function RoadColors({
         </label>
         <div className="specimen-tree__sliders">
           {slider("Line Weight", weight, 0.3, 3, 0.1, setWeight)}
-          {slider("Fill-in Time", speed, 0.5, 8, 0.5, setSpeed, " s")}
         </div>
-        <label
-          className="tool-param-row"
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <span className="tool-param-row__label">Hide Highways</span>
-          <span className={`toggle-switch${hideHighways ? " is-on" : ""}`}>
-            <input
-              type="checkbox"
-              checked={hideHighways}
-              onChange={(e) => setHideHighways(e.target.checked)}
-              style={{
-                position: "absolute",
-                opacity: 0,
-                inset: 0,
-                cursor: "pointer",
-              }}
-              aria-label="Toggle hide highways"
-            />
-            <span className="toggle-switch__track" />
-            <span className="toggle-switch__thumb" />
-          </span>
-        </label>
         <label className="tool-param-row tool-color-row">
           <span className="tool-param-row__label">Stroke Color</span>
           <span className="tool-color-row__inputs">
@@ -921,6 +782,27 @@ export default function RoadColors({
         />
       </div>
 
+      <div className="specimen-tree__actions rail-section">
+        <button
+          type="button"
+          className={`btn${animating ? " is-active" : ""}`}
+          onClick={grow}
+          disabled={!data || animating}
+        >
+          {animating ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+          {animating ? "Drawing…" : "Play"}
+        </button>
+      </div>
+
       {status.kind === "error" && (
         <p style={{ color: "#fe4d64", fontSize: 13, margin: 0 }}>
           {status.msg}
@@ -936,19 +818,6 @@ export default function RoadColors({
 
   return (
     <>
-      <header className="tool-page__header tool-page__header--row">
-        <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
-          <button
-            type="button"
-            className="btn"
-            onClick={grow}
-            disabled={!data || animating}
-          >
-            Grow
-          </button>
-        </div>
-      </header>
-
       {controlsTarget ? createPortal(controls, controlsTarget) : null}
 
       <section
