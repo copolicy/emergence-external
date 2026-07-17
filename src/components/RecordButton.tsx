@@ -12,10 +12,11 @@ interface RecordButtonProps {
   onClick?: () => void;
 }
 
-const RecordIcon = () => (
+const DownloadIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <circle cx="12" cy="12" r="7" />
-    <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none" />
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M5 21h14" />
   </svg>
 );
 
@@ -26,7 +27,7 @@ const StopIcon = () => (
 );
 
 /**
- * Shared "Record" control for tools with a play/grow animation. Captures the
+ * Shared MP4 download control for tools with a play/grow animation. Captures the
  * canvas as a standard MP4 while the animation runs. Pairs with
  * {@link useCanvasRecorder}.
  */
@@ -61,10 +62,10 @@ export default function RecordButton({
       className="btn"
       onClick={onStart ?? onClick}
       disabled={disabled}
-      title="Record the animation as a video"
+      title="Download animation as MP4"
     >
-      <RecordIcon />
-      Record
+      <DownloadIcon />
+      MP4
     </button>
   );
 }

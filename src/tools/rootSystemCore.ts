@@ -29,7 +29,7 @@ export interface RootParams {
   thickness: number; // base stroke width for lateral roots
   taper: number; // width-vs-subtree exponent (lower = sharper taper)
   coil: number; // 0..1 how much each root end coils into a tendril curl
-  endThickness: number; // wire: ×base width the trace ends fatten to
+  endThickness: number; // engineered: ×base width the trace ends fatten to
   hairDensity: number; // 0..1 amount of fine root-hair / mycelial fill
   bedrockOffset: number; // 0..0.4 where the bedrock datum sits from the top
   // image
@@ -75,20 +75,20 @@ export const ROOT_RANGES: Record<keyof RootParams, [number, number, number]> = {
 };
 
 export const ROOT_LABELS: Record<keyof RootParams, string> = {
-  seed: "seed",
-  crowns: "crowns",
-  density: "density",
-  downwardBias: "downward bias",
-  lateralReach: "lateral reach",
-  taprootThickness: "main root",
-  thickness: "lateral thickness",
-  taper: "taper",
-  coil: "coil",
-  endThickness: "end thickness",
-  hairDensity: "mycelium",
-  bedrockOffset: "bedrock",
-  threshold: "threshold",
-  contrast: "contrast",
+  seed: "Seed",
+  crowns: "Crowns",
+  density: "Density",
+  downwardBias: "Downward Bias",
+  lateralReach: "Lateral Reach",
+  taprootThickness: "Main Root",
+  thickness: "Line Weight",
+  taper: "Taper",
+  coil: "Coil",
+  endThickness: "End Thickness",
+  hairDensity: "Mycelium",
+  bedrockOffset: "Bedrock",
+  threshold: "Threshold",
+  contrast: "Contrast",
 };
 
 export const ROOT_HINTS: Record<keyof RootParams, string> = {
@@ -110,7 +110,7 @@ export const ROOT_HINTS: Record<keyof RootParams, string> = {
   coil:
     "How much each root end coils into a tendril curl. Zero leaves the ends straight; higher winds a tighter, longer spiral.",
   endThickness:
-    "Wire brush: absolute width of the terminal pad at each trace end, independent of the connecting trace — so thin and thick traces get the same-size end.",
+    "Engineered brush: absolute width of the terminal pad at each trace end, independent of the connecting trace — so thin and thick traces get the same-size end.",
   hairDensity:
     "Amount of fine root-hair / mycelial threads filling the negative space — the hidden web beneath the structural roots.",
   bedrockOffset:
@@ -120,6 +120,14 @@ export const ROOT_HINTS: Record<keyof RootParams, string> = {
   contrast:
     "Tone curve. Above 1 concentrates roots in the shadows of an image.",
 };
+
+// The only sliders exposed in the UI. Every other param stays at its default.
+// "line weight" is the base lateral stroke width (`thickness`).
+export const SLIDER_KEYS_SIMPLE: (keyof RootParams)[] = [
+  "seed",
+  "density",
+  "thickness",
+];
 
 export const SLIDER_KEYS_GROW: (keyof RootParams)[] = [
   "seed",
@@ -148,23 +156,19 @@ export type RootTier = "taproot" | "lateral" | "hair";
 
 // A brush is two coupled decisions: how a growing tip TURNS, and how the
 // finished roots are DRAWN.
-//   organic — free turning (the original Root System): roots curve smoothly
-//             along the noise field and render as tapered round-capped strokes.
-//   faceted — turns snap to a 60° lattice (the logo's triangular grid, aligned
-//             so a taproot can still run straight down). Roots travel in
-//             straight runs and break at hard vector angles; still tapered.
-//   wire    — turns snap to a 45° lattice (PCB routing) and roots render as
-//             uniform-width traces — technical, almost circuitry rather than
-//             rootstock.
-export type RootBrush = "organic" | "faceted" | "wire";
+//   organic    — free turning (the original Root System): roots curve smoothly
+//                along the noise field and render as tapered round-capped strokes.
+//   engineered — turns snap to a 45° lattice (PCB routing) and roots render as
+//                uniform-width traces — technical, almost circuitry rather than
+//                rootstock.
+export type RootBrush = "organic" | "engineered";
 
 // Lattice each brush snaps growth headings to. `q` is the angular quantum;
 // `offset` rotates the lattice so straight-down (+y, π/2) stays on it — that
 // keeps the dominant taproot vertical and only the breaks land on the grid.
 const BRUSH_SNAP: Record<RootBrush, { q: number; offset: number } | null> = {
   organic: null,
-  faceted: { q: Math.PI / 3, offset: Math.PI / 2 },
-  wire: { q: Math.PI / 4, offset: 0 },
+  engineered: { q: Math.PI / 4, offset: 0 },
 };
 
 function snapAngle(a: number, s: { q: number; offset: number }) {
@@ -180,7 +184,7 @@ export interface RootEdge {
   order: number; // 0..1 when this segment starts growing
   orderEnd: number; // 0..1 when this segment finishes
   tier: RootTier;
-  soft?: boolean; // render with round cap/join (wire terminal swell) so the
+  soft?: boolean; // render with round cap/join (engineered terminal swell) so the
   // overlapping sub-segments merge seamlessly across corners and width steps
 }
 
@@ -830,9 +834,9 @@ export function growRoots(
   // so a positive taper reads as a rounded knob rather than a long wedge.
   const organicBallLen = 12 + taperAmt * 30;
 
-  // Wire trace base width per tier. The main taproot tracks the `main root`
+  // Engineered trace base width per tier. The main taproot tracks the `main root`
   // slider; laterals track `lateral thickness` (×4 keeps the default ≈ 0.8).
-  const wireBaseW = (main: boolean) =>
+  const engineeredBaseW = (main: boolean) =>
     main ? p.taprootThickness : p.thickness * 4;
 
   const edges: RootEdge[] = [];
@@ -843,16 +847,17 @@ export function growRoots(
     const main = isMain[i];
     const pathFrac = pathLen[i] * invMax;
     let w: number;
-    if (brush === "wire") {
+    if (brush === "engineered") {
       // Uniform trace width per tier. Lateral traces scale with the `thickness`
       // (lateral thickness) slider so branches other than the main root can be
       // fattened; the main taproot keeps its own constant. Terminals swell via
       // the separate pass below.
-      w = wireBaseW(main);
+      w = engineeredBaseW(main);
     } else if (main) {
       // Taproot stem: fixed slender width — don't balloon with subtree size.
       w = p.taprootThickness * (1.05 - pathFrac * 0.2);
-    } else if (brush === "organic") {
+    } else {
+      // Organic: even body weight, with the bipolar `taper` reshaping the tip.
       if (taperAmt > 0) {
         // Hold body weight, then swell to a knob concentrated at the very tip.
         // Smoothstep gives a gentle neck where the swell begins and a rounded
@@ -865,10 +870,6 @@ export function growRoots(
         const s = Math.min(1, tipDist[i] / organicWispLen);
         w = organicBodyW * (organicTipScale + (1 - organicTipScale) * s);
       }
-    } else {
-      // Faceted: subtree-size taper. Clamp the exponent so the shared slider's
-      // new negative range can't invert it (trunk-thin / tip-thick).
-      w = p.thickness * Math.pow(size[i], Math.max(0.05, p.taper));
     }
     nodeW[i] = w;
     edges.push({
@@ -947,33 +948,33 @@ export function growRoots(
     }
   }
 
-  // ---- wire terminal swell -------------------------------------------------
-  // Wire traces fatten toward each end into a thicker terminal — the wire
+  // ---- engineered terminal swell -------------------------------------------
+  // Engineered traces fatten toward each end into a thicker terminal — the
   // counterpart of the organic ball. Rather than widening the (few, ~6px) trace
   // segments — which steps coarsely and notches under the butt caps — we
   // overlay a finely-resampled run along the last stretch of the trace whose
   // width ramps up in small increments, so the swell reads as a smooth (but
-  // still stepped, in the wire idiom) taper into a fat tip.
-  if (brush === "wire") {
+  // still stepped, in the engineered idiom) taper into a fat tip.
+  if (brush === "engineered") {
     const keptKids = new Int32Array(N);
     for (let i = 0; i < N; i++) {
       const par = parent[i];
       if (keep[i] && par >= 0 && keep[par]) keptKids[par]++;
     }
-    const WIRE_BALL_LEN = 20; // px of trace that fattens toward the tip
+    const BALL_LEN = 20; // px of trace that fattens toward the tip
     // Terminal width is ABSOLUTE (px), independent of the connecting trace, so
     // thin and thick traces get the same-size end.
-    const WIRE_END_W = p.endThickness;
+    const END_W = p.endThickness;
     const STEP = 2; // fine sub-segment length → many small width steps
     for (let i = 0; i < N; i++) {
       if (!keep[i] || parent[i] < 0 || keptKids[i] > 0) continue; // kept ends
-      const base = wireBaseW(isMain[i]);
+      const base = engineeredBaseW(isMain[i]);
       const ord = edgeEnd[i];
-      // Collect the trace points from the tip backward, up to WIRE_BALL_LEN.
+      // Collect the trace points from the tip backward, up to BALL_LEN.
       const poly: number[] = [px[i], py[i]];
       let node = i;
       let back = 0;
-      while (parent[node] >= 0 && keep[parent[node]] && back < WIRE_BALL_LEN) {
+      while (parent[node] >= 0 && keep[parent[node]] && back < BALL_LEN) {
         const par = parent[node];
         back += segLen(node);
         poly.push(px[par], py[par]);
@@ -982,12 +983,12 @@ export function growRoots(
       const tier = isMain[i] ? "taproot" : "lateral";
       // Ramp from the trace width (back) to the absolute end width (tip).
       const swellAt = (d: number) => {
-        const u = 1 - Math.min(1, d / WIRE_BALL_LEN); // 0 back → 1 tip
+        const u = 1 - Math.min(1, d / BALL_LEN); // 0 back → 1 tip
         const e = u * u * (3 - 2 * u);
-        return base + (WIRE_END_W - base) * e;
+        return base + (END_W - base) * e;
       };
       // Walk the polyline from the tip. Straight runs are widened with square
-      // (butt) sub-segments so the ends and steps stay crisp/wire-like; the
+      // (butt) sub-segments so the ends and steps stay crisp/engineered; the
       // trace's corner vertices get a small round fill so the turns don't gap.
       let distFromTip = 0;
       for (let pi = 2; pi < poly.length; pi += 2) {
@@ -1045,7 +1046,7 @@ export function growRoots(
   const soilTop = bedrockY + 6;
   // Candidate origins: skip the first node of each crown (the heavy taproot
   // head) so hairs emanate from the finer roots, where real root hairs live.
-  // Mycelium is an organic-brush concept only; faceted and wire grow no hairs.
+  // Mycelium is an organic-brush concept only; engineered grows no hairs.
   const hairCount = brush === "organic" ? Math.round(p.hairDensity * 360) : 0;
   if (N > crownCount + 2) {
     let placed = 0;
@@ -1154,12 +1155,12 @@ export function drawRoots(
     ctx.fillRect(0, 0, w, h);
   }
 
-  const wire = brush === "wire";
-  // Round caps on organic/faceted: they overlap to hide the seams between the
-  // many little segments. The ends don't read as rounded nubs because the coil
+  const engineered = brush === "engineered";
+  // Round caps on organic: they overlap to hide the seams between the many
+  // little segments. The ends don't read as rounded nubs because the coil
   // tapers to ~0 width at the tip, so the cap there is effectively a point.
-  // Wire keeps butt caps for clean trace ends.
-  ctx.lineCap = wire ? "butt" : "round";
+  // Engineered keeps butt caps for clean trace ends.
+  ctx.lineCap = engineered ? "butt" : "round";
   ctx.lineJoin = "round";
 
   // Mycelial hairs — faint, drawn first so structural roots sit on top.
@@ -1169,13 +1170,13 @@ export function drawRoots(
     strokeRootSegment(ctx, e, progress);
   }
 
-  // Structural roots — taproot + laterals. Widths (including the wire terminal
-  // swell) are baked into each edge in growRoots.
+  // Structural roots — taproot + laterals. Widths (including the engineered
+  // terminal swell) are baked into each edge in growRoots.
   ctx.globalAlpha = 1;
   for (const e of result.edges) {
     if (!e.soft) strokeRootSegment(ctx, e, progress);
   }
-  // Soft edges (wire terminal swell) get round cap/join so the overlapping
+  // Soft edges (engineered terminal swell) get round cap/join so the overlapping
   // sub-segments merge seamlessly across corners and width steps.
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -1195,9 +1196,9 @@ export function buildRootsSVG(
   brush: RootBrush = "organic",
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const wire = brush === "wire";
-  // Match the canvas: round caps hide segment seams; wire uses butt.
-  const cap = wire ? "butt" : "round";
+  const engineered = brush === "engineered";
+  // Match the canvas: round caps hide segment seams; engineered uses butt.
+  const cap = engineered ? "butt" : "round";
   const parts: string[] = [];
   // Omit the ground rect for a transparent export, so the roots can drop onto
   // any surface; otherwise paint the canvas background.
@@ -1227,7 +1228,7 @@ export function buildRootsSVG(
   }
   parts.push(`</g>`);
 
-  // Soft edges (wire terminal swell) — round caps so they merge seamlessly.
+  // Soft edges (engineered terminal swell) — round caps so they merge seamlessly.
   const soft = result.edges.filter((e) => e.soft);
   if (soft.length) {
     parts.push(

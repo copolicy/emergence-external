@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
@@ -18,9 +19,7 @@ import {
   FLOW_RANGES,
   FW,
   INK,
-  randomFlowParams,
-  SLIDER_KEYS_FIELD,
-  SLIDER_KEYS_LINE,
+  SLIDER_KEYS_SIMPLE,
   traceStreamlines,
   drawFlow,
   type FlowParams,
@@ -28,7 +27,12 @@ import {
 
 const GROWTH_MS = 3200;
 
-export default function FlowField() {
+interface FlowFieldProps {
+  /** Portal tool controls into this host (mode-rail panel under the field tool seg). */
+  controlsTarget?: HTMLElement | null;
+}
+
+export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(FW, FH);
   const [params, setParams] = useState<FlowParams>(DEFAULT_FLOW);
@@ -37,7 +41,7 @@ export default function FlowField() {
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
-  const [fade, setFade] = useState(false);
+  const [fade, setFade] = useState(true);
 
   const lines = useMemo(() => {
     return traceStreamlines(buildNoiseField(w, h, params), w, h, params);
@@ -159,15 +163,13 @@ export default function FlowField() {
     [],
   );
 
-  const regenerate = () => setParams((prev) => randomFlowParams(prev));
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
     setParams(DEFAULT_FLOW);
     setInk(INK);
     setBackground(BG);
-    setFade(false);
+    setFade(true);
     resetSize();
   };
 
@@ -281,95 +283,105 @@ export default function FlowField() {
     </label>
   );
 
+  const controls = (
+    <>
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Canvas</span>
+        <AspectRatioControl value={config} onChange={setConfig} />
+      </div>
+
+      <div className="specimen-tree__group rail-section">
+        <label
+          className="tool-param-row has-tip"
+          data-tip="Thin the linework from dense to sparse toward the bottom"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span className="tool-param-row__label">Fade</span>
+          <span className={`toggle-switch${fade ? " is-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={fade}
+              onChange={(e) => setFade(e.target.checked)}
+              style={{
+                position: "absolute",
+                opacity: 0,
+                inset: 0,
+                cursor: "pointer",
+              }}
+              aria-label="Toggle fade"
+            />
+            <span className="toggle-switch__track" />
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+        <div className="specimen-tree__sliders">
+          {SLIDER_KEYS_SIMPLE.map(renderRow)}
+        </div>
+      </div>
+
+      <div className="specimen-tree__group">
+        {colorRow(
+          "Stroke Color",
+          "Color of the flow lines.",
+          ink,
+          INK,
+          setInk,
+        )}
+        {colorRow(
+          "Background",
+          "Canvas background color behind the lines.",
+          background,
+          BG,
+          setBackground,
+        )}
+      </div>
+
+      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
+        <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} />
+        <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
+      </div>
+
+      <div className="specimen-tree__actions rail-section">
+        <button
+          type="button"
+          className={`btn${growing ? " is-active" : ""}`}
+          onClick={toggleGrow}
+        >
+          {growing ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+          {growing ? "Drawing…" : "Play"}
+        </button>
+        <button type="button" className="btn" onClick={reset}>
+          Reset
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <>
-      <header className="tool-page__header tool-page__header--row">
-        <h1 className="tool-page__title">Fingerprint</h1>
-        <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
-          <AspectRatioControl value={config} onChange={setConfig} />
-          <button
-            type="button"
-            className={`btn${fade ? " is-active" : ""}`}
-            aria-pressed={fade}
-            onClick={() => setFade((f) => !f)}
-            title="Thin the linework from dense to sparse toward the bottom"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 6h16" />
-              <path d="M5 11h14" strokeOpacity="0.7" />
-              <path d="M7 16h10" strokeOpacity="0.4" strokeDasharray="2 2.5" />
-              <path d="M9 20h6" strokeOpacity="0.2" strokeDasharray="1.5 3" />
-            </svg>
-            Fade
-          </button>
-          <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} />
-          <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
-        </div>
-      </header>
+      {controlsTarget ? createPortal(controls, controlsTarget) : null}
 
-      <section className="specimen-tree" aria-label="Flow field canvas">
-        <aside className="specimen-tree__controls">
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">field</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_FIELD.map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">lines</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_LINE.map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            {colorRow(
-              "stroke color",
-              "Color of the flow lines.",
-              ink,
-              INK,
-              setInk,
-            )}
-            {colorRow(
-              "background",
-              "Canvas background color behind the lines.",
-              background,
-              BG,
-              setBackground,
-            )}
-          </div>
-
-          <div className="specimen-tree__actions">
-            <button
-              type="button"
-              className={`btn${growing ? " is-active" : ""}`}
-              onClick={toggleGrow}
-            >
-              {growing ? (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="5" width="4" height="14" rx="1" />
-                  <rect x="14" y="5" width="4" height="14" rx="1" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-              {growing ? "Drawing…" : "Play"}
-            </button>
-            <button type="button" className="btn" onClick={regenerate}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                <path d="M21 3v6h-6" />
-              </svg>
-              Regenerate
-            </button>
-            <button type="button" className="btn" onClick={reset}>
-              Reset
-            </button>
-          </div>
-        </aside>
+      <section
+        className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
+        aria-label="Flow field canvas"
+      >
+        {!controlsTarget && (
+          <aside className="specimen-tree__controls">{controls}</aside>
+        )}
 
         <div className="specimen-tree__canvas-wrap">
           <canvas ref={canvasRef} className="specimen-tree__canvas" />

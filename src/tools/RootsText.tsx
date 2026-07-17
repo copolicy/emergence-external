@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
@@ -16,13 +17,10 @@ import {
   drawRootsText,
   growRootsText,
   INK,
-  randomRootsTextParams,
   ROOTS_TEXT_HINTS,
   ROOTS_TEXT_LABELS,
   ROOTS_TEXT_RANGES,
-  SLIDER_KEYS_FORM,
-  SLIDER_KEYS_GROW,
-  SLIDER_KEYS_TEXT,
+  SLIDER_KEYS_SIMPLE,
   TH,
   TW,
   type FontFaceSpec,
@@ -31,11 +29,10 @@ import {
   type RootsTextParams,
 } from "./rootsTextCore";
 
-// The three Root System brushes, exposed here too.
+// The Root System brushes, exposed here too.
 const BRUSHES: { id: RootsTextBrush; label: string }[] = [
   { id: "organic", label: "Organic" },
-  { id: "faceted", label: "Faceted" },
-  { id: "wire", label: "Wire" },
+  { id: "engineered", label: "Engineered" },
 ];
 
 const readAsDataURL = (file: File) =>
@@ -91,7 +88,12 @@ const fontFormatFor = (name: string) => {
 
 const GROWTH_MS = 4200;
 
-export default function RootsText() {
+interface RootsTextProps {
+  /** Portal tool controls into this host (mode-rail panel under the field tool seg). */
+  controlsTarget?: HTMLElement | null;
+}
+
+export default function RootsText({ controlsTarget = null }: RootsTextProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [params, setParams] = useState<RootsTextParams>(DEFAULT_ROOTS_TEXT);
   const [text, setText] = useState(DEFAULT_TEXT);
@@ -327,8 +329,6 @@ export default function RootsText() {
     }
   };
 
-  const regenerate = () => setParams((prev) => randomRootsTextParams(prev));
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
@@ -440,158 +440,148 @@ export default function RootsText() {
     </label>
   );
 
+  const controls = (
+    <>
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Canvas</span>
+        <AspectRatioControl value={config} onChange={setConfig} />
+      </div>
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Copy</span>
+        <label className="tool-param-row">
+          <span className="tool-param-row__header">
+            <span className="tool-param-row__label">Text</span>
+          </span>
+          <textarea
+            className="tool-text-input"
+            rows={2}
+            value={text}
+            spellCheck={false}
+            disabled={!!glyphImg}
+            onChange={(e) => setText(e.target.value)}
+            aria-label="text to surround"
+          />
+        </label>
+
+        <div className="tool-uploads">
+          <label className="btn tool-upload-btn">
+            {fontName ? "Change font" : "Upload font"}
+            <input
+              type="file"
+              accept=".ttf,.otf,.woff,.woff2,font/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onFontFile(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {fontName && (
+            <button type="button" className="tool-upload-chip" onClick={clearFont}>
+              <span className="tool-upload-chip__name">{fontName}</span>
+              <span aria-hidden="true">✕</span>
+            </button>
+          )}
+
+          <label className="btn tool-upload-btn">
+            {svgName ? "Change SVG" : "Upload SVG text"}
+            <input
+              type="file"
+              accept=".svg,image/svg+xml"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onSvgFile(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {svgName && (
+            <button type="button" className="tool-upload-chip" onClick={clearSvg}>
+              <span className="tool-upload-chip__name">{svgName}</span>
+              <span aria-hidden="true">✕</span>
+            </button>
+          )}
+        </div>
+        {glyphImg && (
+          <p className="tool-upload-note">
+            Roots are wrapping your uploaded SVG. Clear it to type text again.
+          </p>
+        )}
+        <p className="tool-upload-note">Drag the canvas to reposition the copy.</p>
+      </div>
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Brush</span>
+        <div role="group" aria-label="Brush" style={{ display: "flex", gap: 4 }}>
+          {BRUSHES.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              className={`btn${brush === b.id ? " is-active" : ""}`}
+              aria-pressed={brush === b.id}
+              onClick={() => setBrush(b.id)}
+              style={{ flex: 1, justifyContent: "center" }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="specimen-tree__group rail-section">
+        <div className="specimen-tree__sliders">{SLIDER_KEYS_SIMPLE.map(renderRow)}</div>
+      </div>
+
+      <div className="specimen-tree__group">
+        {colorRow("Stroke Color", ink, INK, setInk)}
+        {colorRow("Background", background, BG, setBackground)}
+      </div>
+
+      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
+        <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} disabled={!result.edges.length} />
+        <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
+      </div>
+
+      <div className="specimen-tree__actions rail-section">
+        <button
+          type="button"
+          className={`btn${growing ? " is-active" : ""}`}
+          onClick={toggleGrow}
+          disabled={!result.edges.length}
+        >
+          {growing ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+          {growing ? "Growing…" : "Play"}
+        </button>
+        <button type="button" className="btn" onClick={reset}>
+          Reset
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <>
-      <header className="tool-page__header tool-page__header--row">
-        <h1 className="tool-page__title">Roots Surrounding Text</h1>
-        <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
-          <AspectRatioControl value={config} onChange={setConfig} />
-          <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} disabled={!result.edges.length} />
-          <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
-        </div>
-      </header>
+      {controlsTarget ? createPortal(controls, controlsTarget) : null}
 
-      <section className="specimen-tree" aria-label="Roots Surrounding Text canvas">
-        <aside className="specimen-tree__controls">
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">copy</span>
-            <label className="tool-param-row">
-              <span className="tool-param-row__header">
-                <span className="tool-param-row__label">text</span>
-              </span>
-              <textarea
-                className="tool-text-input"
-                rows={2}
-                value={text}
-                spellCheck={false}
-                disabled={!!glyphImg}
-                onChange={(e) => setText(e.target.value)}
-                aria-label="text to surround"
-              />
-            </label>
-
-            <div className="tool-uploads">
-              <label className="btn tool-upload-btn">
-                {fontName ? "Change font" : "Upload font"}
-                <input
-                  type="file"
-                  accept=".ttf,.otf,.woff,.woff2,font/*"
-                  hidden
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) onFontFile(f);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-              {fontName && (
-                <button type="button" className="tool-upload-chip" onClick={clearFont}>
-                  <span className="tool-upload-chip__name">{fontName}</span>
-                  <span aria-hidden="true">✕</span>
-                </button>
-              )}
-
-              <label className="btn tool-upload-btn">
-                {svgName ? "Change SVG" : "Upload SVG text"}
-                <input
-                  type="file"
-                  accept=".svg,image/svg+xml"
-                  hidden
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) onSvgFile(f);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-              {svgName && (
-                <button type="button" className="tool-upload-chip" onClick={clearSvg}>
-                  <span className="tool-upload-chip__name">{svgName}</span>
-                  <span aria-hidden="true">✕</span>
-                </button>
-              )}
-            </div>
-            {glyphImg && (
-              <p className="tool-upload-note">
-                Roots are wrapping your uploaded SVG. Clear it to type text again.
-              </p>
-            )}
-            <p className="tool-upload-note">Drag the canvas to reposition the copy.</p>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">brush</span>
-            <div role="group" aria-label="Brush" style={{ display: "flex", gap: 4 }}>
-              {BRUSHES.map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  className={`btn${brush === b.id ? " is-active" : ""}`}
-                  aria-pressed={brush === b.id}
-                  onClick={() => setBrush(b.id)}
-                  style={{ flex: 1, justifyContent: "center" }}
-                >
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">grow</span>
-            <div className="specimen-tree__sliders">{SLIDER_KEYS_GROW.map(renderRow)}</div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">text</span>
-            <div className="specimen-tree__sliders">{SLIDER_KEYS_TEXT.map(renderRow)}</div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">form</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_FORM.filter(
-                (key) => key !== "hairDensity" || brush === "organic",
-              ).map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            {colorRow("stroke color", ink, INK, setInk)}
-            {colorRow("background", background, BG, setBackground)}
-          </div>
-
-          <div className="specimen-tree__actions">
-            <button
-              type="button"
-              className={`btn${growing ? " is-active" : ""}`}
-              onClick={toggleGrow}
-              disabled={!result.edges.length}
-            >
-              {growing ? (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="5" width="4" height="14" rx="1" />
-                  <rect x="14" y="5" width="4" height="14" rx="1" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-              {growing ? "Growing…" : "Play"}
-            </button>
-            <button type="button" className="btn" onClick={regenerate}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                <path d="M21 3v6h-6" />
-              </svg>
-              Regenerate
-            </button>
-            <button type="button" className="btn" onClick={reset}>
-              Reset
-            </button>
-          </div>
-        </aside>
+      <section
+        className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
+        aria-label="Roots Surrounding Text canvas"
+      >
+        {!controlsTarget && (
+          <aside className="specimen-tree__controls">{controls}</aside>
+        )}
 
         <div
           className="specimen-tree__canvas-wrap"

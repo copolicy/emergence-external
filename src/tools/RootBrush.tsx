@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
@@ -14,16 +15,13 @@ import {
   drawRoots,
   growRoots,
   INK,
-  randomRootParams,
   RH,
   ROOT_HINTS,
   ROOT_LABELS,
   ROOT_RANGES,
   RW,
   sampleLuminance,
-  SLIDER_KEYS_GROW,
-  SLIDER_KEYS_IMAGE,
-  SLIDER_KEYS_ROOT,
+  SLIDER_KEYS_SIMPLE,
   type RootBrush as Brush,
   type RootParams,
 } from "./rootSystemCore";
@@ -44,22 +42,41 @@ function viewportFitSize(
   return { dw: viewportW, dh: viewportW / ar };
 }
 
-// The same Root System engine, exposed through three "brushes" that change how
-// a growing tip turns and how the finished roots are drawn. See rootSystemCore.
+// The same Root System engine, exposed through "brushes" that change how a
+// growing tip turns and how the finished roots are drawn. See rootSystemCore.
 const BRUSHES: { id: Brush; label: string }[] = [
   { id: "organic", label: "Organic" },
-  { id: "faceted", label: "Faceted" },
-  { id: "wire", label: "Wire" },
+  { id: "engineered", label: "Engineered" },
 ];
 
-export default function RootBrush() {
+interface RootBrushProps {
+  // When provided, the brush is controlled by the parent (the app nav) rather
+  // than a local toggle, so it survives remounts. `hideBrushToggle` then hides
+  // the in-panel brush group since the nav already exposes it.
+  brush?: Brush;
+  onBrushChange?: (b: Brush) => void;
+  hideBrushToggle?: boolean;
+  /** Portal tool controls into this host (mode-rail panel under the brush seg). */
+  controlsTarget?: HTMLElement | null;
+}
+
+export default function RootBrush({
+  brush: brushProp,
+  onBrushChange,
+  hideBrushToggle,
+  controlsTarget = null,
+}: RootBrushProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const { w, h, exportDims, pxScale, config, setConfig } = useCanvasDimensions(RW, RH);
   const [params, setParams] = useState<RootParams>(DEFAULT_ROOT);
-  const [brush, setBrush] = useState<Brush>("organic");
+  const [brushState, setBrushState] = useState<Brush>("organic");
+  // Controlled by the parent when `brushProp` is supplied; otherwise local.
+  const brush = brushProp ?? brushState;
+  const setBrush = (b: Brush) =>
+    onBrushChange ? onBrushChange(b) : setBrushState(b);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -233,19 +250,6 @@ export default function RootBrush() {
     [],
   );
 
-  const regenerate = () => setParams((prev) => randomRootParams(prev));
-
-  const handleImageUpload = (file: File | undefined) => {
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      setImage(img);
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
-  };
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
@@ -369,136 +373,98 @@ export default function RootBrush() {
     </label>
   );
 
+  const controls = (
+    <>
+      {!hideBrushToggle && (
+        <div className="specimen-tree__group">
+          <span className="specimen-tree__group-title">Brush</span>
+          <div
+            role="group"
+            aria-label="Brush"
+            style={{ display: "flex", gap: 4 }}
+          >
+            {BRUSHES.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                className={`btn${brush === b.id ? " is-active" : ""}`}
+                aria-pressed={brush === b.id}
+                onClick={() => setBrush(b.id)}
+                style={{ flex: 1, justifyContent: "center" }}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Canvas</span>
+        <AspectRatioControl value={config} onChange={setConfig} />
+      </div>
+
+      <div className="specimen-tree__group rail-section">
+        <div className="specimen-tree__sliders">
+          {SLIDER_KEYS_SIMPLE.map(renderRow)}
+        </div>
+      </div>
+
+      <div className="specimen-tree__group">
+        {colorRow("Stroke Color", ink, INK, setInk)}
+        {colorRow("Background", background, BG, setBackground)}
+      </div>
+
+      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
+        <ExportButtons
+          onPNG={downloadPNG}
+          onSVG={downloadSVG}
+          disabled={!hasOutput}
+        />
+        <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
+      </div>
+
+      <div className="specimen-tree__actions rail-section">
+        <button
+          type="button"
+          className={`btn${growing ? " is-active" : ""}`}
+          onClick={toggleGrow}
+          disabled={!hasOutput}
+        >
+          {growing ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+          {growing ? "Growing…" : "Grow"}
+        </button>
+        <button type="button" className="btn" onClick={reset}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v5h5" />
+          </svg>
+          Reset
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <>
-      <header className="tool-page__header tool-page__header--row">
-        <h1 className="tool-page__title">Root Brush</h1>
-        <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
-          <AspectRatioControl value={config} onChange={setConfig} />
-          <ExportButtons
-            onPNG={downloadPNG}
-            onSVG={downloadSVG}
-            disabled={!hasOutput}
-          />
-          <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
-        </div>
-      </header>
+      {controlsTarget ? createPortal(controls, controlsTarget) : null}
 
       <section
-        className="specimen-tree specimen-tree--viewport specimen-tree--wide-controls"
+        className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
         aria-label="Root brush canvas"
       >
-        <aside className="specimen-tree__controls">
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">brush</span>
-            <div
-              role="group"
-              aria-label="Brush"
-              style={{ display: "flex", gap: 4 }}
-            >
-              {BRUSHES.map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  className={`btn${brush === b.id ? " is-active" : ""}`}
-                  aria-pressed={brush === b.id}
-                  onClick={() => setBrush(b.id)}
-                  style={{ flex: 1, justifyContent: "center" }}
-                >
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <label className="specimen-tree__upload">
-            <span className="tool-param-row__label">source image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleImageUpload(e.target.files?.[0])}
-            />
-            {image && (
-              <span className="specimen-tree__upload-name">
-                {image.naturalWidth}×{image.naturalHeight} loaded
-              </span>
-            )}
-          </label>
-
-          {image && (
-            <div className="specimen-tree__group">
-              <span className="specimen-tree__group-title">image</span>
-              <div className="specimen-tree__sliders">
-                {SLIDER_KEYS_IMAGE.map(renderRow)}
-              </div>
-            </div>
-          )}
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">growth</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_GROW.map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">roots</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_ROOT.filter(
-                (key) =>
-                  key !== "hairDensity" &&
-                  // Coil only shapes the terminal curls on the organic brush;
-                  // it's a no-op for faceted/wire, so hide it there.
-                  (key !== "coil" || brush === "organic") &&
-                  // End thickness only fattens wire trace terminals.
-                  (key !== "endThickness" || brush === "wire") &&
-                  // Taper shapes organic/faceted ends only; wire uses end thickness.
-                  (key !== "taper" || brush !== "wire"),
-              ).map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            {colorRow("stroke color", ink, INK, setInk)}
-            {colorRow("background", background, BG, setBackground)}
-          </div>
-
-          <div className="specimen-tree__actions">
-            <button
-              type="button"
-              className={`btn${growing ? " is-active" : ""}`}
-              onClick={toggleGrow}
-              disabled={!hasOutput}
-            >
-              {growing ? (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="5" width="4" height="14" rx="1" />
-                  <rect x="14" y="5" width="4" height="14" rx="1" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-              {growing ? "Growing…" : "Grow"}
-            </button>
-            <button type="button" className="btn" onClick={regenerate}>
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                <path d="M21 3v6h-6" />
-              </svg>
-              Regenerate
-            </button>
-            <button type="button" className="btn" onClick={reset}>
-              Reset
-            </button>
-          </div>
-        </aside>
+        {!controlsTarget && (
+          <aside className="specimen-tree__controls">{controls}</aside>
+        )}
 
         <div
           ref={canvasWrapRef}

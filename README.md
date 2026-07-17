@@ -8,7 +8,7 @@ the top; each renders to a canvas you can export as PNG, SVG, or MP4.
 
 | Tab | What it does |
 | --- | --- |
-| **Root Brush** | Root-system engine with switchable brushes — organic taper, faceted 60° lattice, or technical 45° wire traces. Optional image input. |
+| **Root Brush** | Root-system engine with switchable brushes — organic taper or technical 45° engineered traces. Optional image input. |
 | **Fingerprint** | A noise-driven vector field traced into flowing streamlines. |
 | **Jagged Fingerprint** | The Fingerprint engine on circular whorls — faceted, mitered loops. |
 | **Contour** | Nested topographic iso-lines of a warped noise field. Optional image input. |

@@ -55,20 +55,20 @@ export const RANGES: Record<keyof TreeParams, [number, number, number]> = {
 };
 
 export const PARAM_LABELS: Record<keyof TreeParams, string> = {
-  seed: "seed",
-  decay: "decay",
-  spread: "spread",
-  depth: "depth",
-  trunkLen: "trunk length",
-  lean: "lean",
-  scale: "scale",
-  wobble: "wobble",
-  jitter: "jitter",
-  fork: "fork chance",
-  minLen: "min branch",
-  foliage: "density",
-  foliageSize: "leaf size",
-  foliageOpacity: "opacity",
+  seed: "Seed",
+  decay: "Decay",
+  spread: "Spread",
+  depth: "Depth",
+  trunkLen: "Trunk Length",
+  lean: "Lean",
+  scale: "Scale",
+  wobble: "Wobble",
+  jitter: "Jitter",
+  fork: "Fork Chance",
+  minLen: "Min Branch",
+  foliage: "Density",
+  foliageSize: "Leaf Size",
+  foliageOpacity: "Opacity",
 };
 
 export const PARAM_HINTS: Record<keyof TreeParams, string> = {

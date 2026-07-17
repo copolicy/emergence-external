@@ -18,27 +18,24 @@ export const INK = "#00280F";
 export const BG = "#F8FFEE";
 
 // A brush sets how a growing tip TURNS and how the roots are DRAWN — the same
-// three brushes the Root System family uses.
-//   organic — free smooth turning, tapered round-capped strokes (+ mycelium).
-//   faceted — turns snap to a 60° lattice (the logo's triangular grid); roots
-//             run straight and break at hard vector angles, still tapered.
-//   wire    — turns snap to a 45° lattice and roots render as uniform-width,
-//             butt-capped traces — technical PCB routing rather than rootstock.
-export type RootsTextBrush = "organic" | "faceted" | "wire";
+// brushes the Root System family uses.
+//   organic    — free smooth turning, tapered round-capped strokes (+ mycelium).
+//   engineered — turns snap to a 45° lattice and roots render as uniform-width,
+//                butt-capped traces — technical PCB routing rather than rootstock.
+export type RootsTextBrush = "organic" | "engineered";
 
 const BRUSH_SNAP: Record<RootsTextBrush, { q: number; offset: number } | null> = {
   organic: null,
-  faceted: { q: Math.PI / 3, offset: Math.PI / 2 },
-  wire: { q: Math.PI / 4, offset: 0 },
+  engineered: { q: Math.PI / 4, offset: 0 },
 };
 
 function snapAngle(a: number, s: { q: number; offset: number }) {
   return Math.round((a - s.offset) / s.q) * s.q + s.offset;
 }
 
-// Constant trace widths for the wire brush, keyed by tier — uniform rather than
-// tapered, so the network reads as wiring.
-const WIRE_W: Record<RootTier, number> = {
+// Constant trace widths for the engineered brush, keyed by tier — uniform rather
+// than tapered, so the network reads as wiring.
+const ENGINEERED_W: Record<RootTier, number> = {
   taproot: 1.6,
   lateral: 0.8,
   hair: 0.4,
@@ -131,19 +128,19 @@ export const ROOTS_TEXT_RANGES: Record<
 };
 
 export const ROOTS_TEXT_LABELS: Record<keyof RootsTextParams, string> = {
-  seed: "seed",
-  fontSize: "text size",
-  textX: "text x",
-  textY: "text y",
-  sources: "sources",
-  density: "density",
-  haloReach: "halo",
-  approachReach: "reach",
-  clearance: "clearance",
-  taprootThickness: "leader",
-  thickness: "thickness",
-  taper: "taper",
-  hairDensity: "mycelium",
+  seed: "Seed",
+  fontSize: "Text Size",
+  textX: "Text X",
+  textY: "Text Y",
+  sources: "Sources",
+  density: "Density",
+  haloReach: "Halo",
+  approachReach: "Reach",
+  clearance: "Clearance",
+  taprootThickness: "Leader",
+  thickness: "Line Weight",
+  taper: "Taper",
+  hairDensity: "Mycelium",
 };
 
 export const ROOTS_TEXT_HINTS: Record<keyof RootsTextParams, string> = {
@@ -161,6 +158,14 @@ export const ROOTS_TEXT_HINTS: Record<keyof RootsTextParams, string> = {
   taper: "How sharply roots thin toward the tips. Lower values keep bold leaders and wispy ends.",
   hairDensity: "Amount of fine root-hair / mycelial threads clinging to the roots around the text.",
 };
+
+// The only sliders exposed in the UI. Every other param stays at its default.
+// "line weight" is the base finer-root stroke width (`thickness`).
+export const SLIDER_KEYS_SIMPLE: (keyof RootsTextParams)[] = [
+  "seed",
+  "density",
+  "thickness",
+];
 
 export const SLIDER_KEYS_GROW: (keyof RootsTextParams)[] = [
   "seed",
@@ -756,7 +761,7 @@ export function growRootsText(
   // Fine threads sprouting from the finer roots, leaning along the root's own
   // heading — texture clinging to the wreath, staying clear of the glyphs.
   const hairs: RootEdge[] = [];
-  // Mycelium is an organic-brush concept only; faceted and wire grow no hairs.
+  // Mycelium is an organic-brush concept only; engineered grows no hairs.
   const hairCount = brush === "organic" ? Math.round(p.hairDensity * 320) : 0;
   if (N > srcCount + 2) {
     let placed = 0;
@@ -875,20 +880,20 @@ export function drawRootsText(
     ctx.fillRect(0, 0, w, h);
   }
 
-  const wire = brush === "wire";
-  // Wire cuts square butt ends so traces meet cleanly; organic/faceted keep
+  const engineered = brush === "engineered";
+  // Engineered cuts square butt ends so traces meet cleanly; organic keeps
   // round caps (which also hide the seams between segments).
-  ctx.lineCap = wire ? "butt" : "round";
+  ctx.lineCap = engineered ? "butt" : "round";
   ctx.lineJoin = "round";
 
   ctx.strokeStyle = ink;
   ctx.globalAlpha = 0.42;
   for (const e of result.hairs)
-    strokeRootSegment(ctx, e, progress, wire ? WIRE_W.hair : undefined);
+    strokeRootSegment(ctx, e, progress, engineered ? ENGINEERED_W.hair : undefined);
 
   ctx.globalAlpha = 1;
   for (const e of result.edges)
-    strokeRootSegment(ctx, e, progress, wire ? WIRE_W[e.tier] : undefined);
+    strokeRootSegment(ctx, e, progress, engineered ? ENGINEERED_W[e.tier] : undefined);
   ctx.globalAlpha = 1;
 
   // The copy emerges as the roots close in — fades up over the last third.
@@ -905,8 +910,8 @@ export function buildRootsTextSVG(
   brush: RootsTextBrush = "organic",
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const wire = brush === "wire";
-  const cap = wire ? "butt" : "round";
+  const engineered = brush === "engineered";
+  const cap = engineered ? "butt" : "round";
   const parts: string[] = [];
   if (background !== "transparent")
     parts.push(`<rect width="${w}" height="${h}" fill="${background}"/>`);
@@ -916,7 +921,7 @@ export function buildRootsTextSVG(
   );
   for (const e of result.hairs) {
     parts.push(
-      `<line x1="${f(e.x1)}" y1="${f(e.y1)}" x2="${f(e.x2)}" y2="${f(e.y2)}" stroke-width="${f(wire ? WIRE_W.hair : e.w)}"/>`,
+      `<line x1="${f(e.x1)}" y1="${f(e.y1)}" x2="${f(e.x2)}" y2="${f(e.y2)}" stroke-width="${f(engineered ? ENGINEERED_W.hair : e.w)}"/>`,
     );
   }
   parts.push(`</g>`);
@@ -926,7 +931,7 @@ export function buildRootsTextSVG(
   );
   for (const e of result.edges) {
     parts.push(
-      `<line x1="${f(e.x1)}" y1="${f(e.y1)}" x2="${f(e.x2)}" y2="${f(e.y2)}" stroke-width="${f(wire ? WIRE_W[e.tier] : e.w)}"/>`,
+      `<line x1="${f(e.x1)}" y1="${f(e.y1)}" x2="${f(e.x2)}" y2="${f(e.y2)}" stroke-width="${f(engineered ? ENGINEERED_W[e.tier] : e.w)}"/>`,
     );
   }
   parts.push(`</g>`);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ArenaImagePicker from "../components/ArenaImagePicker";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
@@ -21,17 +22,19 @@ import {
   DEFAULT_CONTOUR,
   drawContours,
   INK,
-  randomContourParams,
   sampleLuminance,
-  SLIDER_KEYS_DRAW,
-  SLIDER_KEYS_FIELD,
-  SLIDER_KEYS_IMAGE,
+  SLIDER_KEYS_SIMPLE,
   type ContourParams,
 } from "./contourCore";
 
 const GROWTH_MS = 3600;
 
-export default function Contour() {
+interface ContourProps {
+  /** Portal tool controls into this host (mode-rail panel under the field tool seg). */
+  controlsTarget?: HTMLElement | null;
+}
+
+export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [params, setParams] = useState<ContourParams>(DEFAULT_CONTOUR);
   const [ink, setInk] = useState(INK);
@@ -41,7 +44,7 @@ export default function Contour() {
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [showArena, setShowArena] = useState(false);
   const [arenaError, setArenaError] = useState("");
-  const [fade, setFade] = useState(false);
+  const [fade, setFade] = useState(true);
 
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(CW, CH);
   const exportParams = useMemo(() => scaleStrokeParams(params, pxScale), [params, pxScale]);
@@ -167,8 +170,6 @@ export default function Contour() {
     [],
   );
 
-  const regenerate = () => setParams((prev) => randomContourParams(prev));
-
   const handleImageUpload = (file: File | undefined) => {
     if (!file) return;
     const url = URL.createObjectURL(file);
@@ -198,7 +199,7 @@ export default function Contour() {
     setInk(INK);
     setBackground(BG);
     setImage(null);
-    setFade(false);
+    setFade(true);
     resetSize();
   };
 
@@ -310,131 +311,129 @@ export default function Contour() {
     </label>
   );
 
+  const controls = (
+    <>
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Canvas</span>
+        <AspectRatioControl value={config} onChange={setConfig} />
+      </div>
+
+      <label
+        className="specimen-tree__upload has-tip"
+        data-tip="Optional. Drop in an image and the contours band its tone like a survey of the picture. Leave empty for pure generated terrain."
+      >
+        <span className="tool-param-row__label">Source Image</span>
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(e) => handleImageUpload(e.target.files?.[0])}
+        />
+        {image && (
+          <span className="specimen-tree__upload-name">
+            {image.naturalWidth}×{image.naturalHeight} loaded
+          </span>
+        )}
+      </label>
+
+      <button
+        type="button"
+        className="btn specimen-tree__arena-btn"
+        onClick={() => {
+          setArenaError("");
+          setShowArena(true);
+        }}
+      >
+        Browse Are.na
+      </button>
+      {arenaError && <p className="specimen-tree__arena-error">{arenaError}</p>}
+
+      <div className="specimen-tree__group rail-section">
+        <label
+          className="tool-param-row has-tip"
+          data-tip="Dissolve the linework toward the bottom"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span className="tool-param-row__label">Fade</span>
+          <span className={`toggle-switch${fade ? " is-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={fade}
+              onChange={(e) => setFade(e.target.checked)}
+              style={{
+                position: "absolute",
+                opacity: 0,
+                inset: 0,
+                cursor: "pointer",
+              }}
+              aria-label="Toggle fade"
+            />
+            <span className="toggle-switch__track" />
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+        <div className="specimen-tree__sliders">
+          {SLIDER_KEYS_SIMPLE.map(renderRow)}
+        </div>
+      </div>
+
+      <div className="specimen-tree__group">
+        {colorRow("Stroke Color", "Color of the contour lines.", ink, INK, setInk)}
+        {colorRow(
+          "Background",
+          "Canvas background color behind the lines.",
+          background,
+          BG,
+          setBackground,
+        )}
+      </div>
+
+      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
+        <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} disabled={!result.lines.length} />
+        <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
+      </div>
+
+      <div className="specimen-tree__actions rail-section">
+        <button
+          type="button"
+          className={`btn${growing ? " is-active" : ""}`}
+          onClick={toggleGrow}
+          disabled={!result.lines.length}
+        >
+          {growing ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+          {growing ? "Rising…" : "Play"}
+        </button>
+        <button type="button" className="btn" onClick={reset}>
+          Reset
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <>
-      <header className="tool-page__header tool-page__header--row">
-        <h1 className="tool-page__title">Contour</h1>
-        <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
-          <AspectRatioControl value={config} onChange={setConfig} />
-          <button
-            type="button"
-            className={`btn${fade ? " is-active" : ""}`}
-            aria-pressed={fade}
-            onClick={() => setFade((f) => !f)}
-            title="Dissolve the linework toward the bottom"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 6h16" />
-              <path d="M5 11h14" strokeOpacity="0.7" />
-              <path d="M7 16h10" strokeOpacity="0.4" strokeDasharray="2 2.5" />
-              <path d="M9 20h6" strokeOpacity="0.2" strokeDasharray="1.5 3" />
-            </svg>
-            Fade
-          </button>
-          <ExportButtons onPNG={downloadPNG} onSVG={downloadSVG} disabled={!result.lines.length} />
-          <RecordButton recording={recorder.recording} supported={recorder.supported} onStart={startRecord} onStop={stopRecord} />
-        </div>
-      </header>
+      {controlsTarget ? createPortal(controls, controlsTarget) : null}
 
       <section
-        className="specimen-tree specimen-tree--viewport"
+        className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
         aria-label="Contour map canvas"
       >
-        <aside className="specimen-tree__controls">
-          <label
-            className="specimen-tree__upload has-tip"
-            data-tip="Optional. Drop in an image and the contours band its tone like a survey of the picture. Leave empty for pure generated terrain."
-          >
-            <span className="tool-param-row__label">source image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleImageUpload(e.target.files?.[0])}
-            />
-            {image && (
-              <span className="specimen-tree__upload-name">
-                {image.naturalWidth}×{image.naturalHeight} loaded
-              </span>
-            )}
-          </label>
-
-          <button
-            type="button"
-            className="btn specimen-tree__arena-btn"
-            onClick={() => {
-              setArenaError("");
-              setShowArena(true);
-            }}
-          >
-            Browse Are.na
-          </button>
-          {arenaError && <p className="specimen-tree__arena-error">{arenaError}</p>}
-
-          {image && (
-            <div className="specimen-tree__group">
-              <span className="specimen-tree__group-title">image</span>
-              <div className="specimen-tree__sliders">
-                {SLIDER_KEYS_IMAGE.map(renderRow)}
-              </div>
-            </div>
-          )}
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">field</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_FIELD.map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">lines</span>
-            <div className="specimen-tree__sliders">
-              {SLIDER_KEYS_DRAW.map(renderRow)}
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            {colorRow("stroke color", "Color of the contour lines.", ink, INK, setInk)}
-            {colorRow(
-              "background",
-              "Canvas background color behind the lines.",
-              background,
-              BG,
-              setBackground,
-            )}
-          </div>
-
-          <div className="specimen-tree__actions">
-            <button
-              type="button"
-              className={`btn${growing ? " is-active" : ""}`}
-              onClick={toggleGrow}
-              disabled={!result.lines.length}
-            >
-              {growing ? (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="5" width="4" height="14" rx="1" />
-                  <rect x="14" y="5" width="4" height="14" rx="1" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-              {growing ? "Rising…" : "Play"}
-            </button>
-            <button type="button" className="btn" onClick={regenerate}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                <path d="M21 3v6h-6" />
-              </svg>
-              Regenerate
-            </button>
-            <button type="button" className="btn" onClick={reset}>
-              Reset
-            </button>
-          </div>
-        </aside>
+        {!controlsTarget && (
+          <aside className="specimen-tree__controls">{controls}</aside>
+        )}
 
         <div className="specimen-tree__canvas-wrap">
           <canvas ref={canvasRef} className="specimen-tree__canvas" />

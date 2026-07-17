@@ -28,19 +28,19 @@ export interface JaggedParams extends FlowParams {
 
 export const DEFAULT_JAGGED: JaggedParams = {
   ...DEFAULT_FLOW,
-  seed: 4829,
-  fieldScale: 4.5,
-  swirl: 0.62,
-  turbulence: 3,
+  seed: 42061,
+  fieldScale: 4,
+  swirl: 0,
+  turbulence: 2,
   drift: 0,
-  spacing: 5,
-  stepLen: 8,
-  maxLen: 420,
-  lineWidth: 0.95,
-  widthVar: 0.08,
-  jitter: 0.22,
-  jag: 45,
-  spiral: 0.14,
+  spacing: 9,
+  stepLen: 4.5,
+  maxLen: 40,
+  lineWidth: 1,
+  widthVar: 0,
+  jitter: 0.34,
+  jag: 66,
+  spiral: 0.04,
 };
 
 export const JAGGED_RANGES: Record<
@@ -54,8 +54,8 @@ export const JAGGED_RANGES: Record<
 
 export const JAGGED_LABELS: Record<keyof JaggedParams, string> = {
   ...FLOW_LABELS,
-  jag: "jag",
-  spiral: "spiral",
+  jag: "Jag",
+  spiral: "Spiral",
 };
 
 export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
@@ -67,6 +67,13 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
   fieldScale:
     "Size of the ridge pattern. Lower values make broad sweeping lanes; higher packs them tighter.",
 };
+
+// The only sliders exposed in the UI. Every other param stays at its default.
+export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
+  "seed",
+  "spacing",
+  "lineWidth",
+];
 
 export const SLIDER_KEYS_FIELD_JAGGED: (keyof JaggedParams)[] = [
   "seed",

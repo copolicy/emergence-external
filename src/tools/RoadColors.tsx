@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import snapshotUrl from "../data/sf-bay-roads.json?url";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
@@ -80,7 +81,11 @@ type Status =
   | { kind: "ready" }
   | { kind: "error"; msg: string };
 
-export default function RoadColors() {
+export default function RoadColors({
+  controlsTarget = null,
+}: {
+  controlsTarget?: HTMLElement | null;
+} = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -97,7 +102,7 @@ export default function RoadColors() {
   const [bg, setBg] = useState(BG);
   const [ink, setInk] = useState(INK);
   const [hideHighways, setHideHighways] = useState(true);
-  const [fade, setFade] = useState(false);
+  const [fade, setFade] = useState(true);
 
   // View transform — zoom about the centre + pan in px. Decoupled from the
   // fetch radius, so zooming never re-downloads.
@@ -696,10 +701,242 @@ export default function RoadColors() {
 
   const loading = status.kind === "loading";
 
+  const controls = (
+    <>
+      <label className="tool-param-row">
+        <span className="tool-param-row__label">City</span>
+        <input
+          type="text"
+          value={place}
+          spellCheck={false}
+          onChange={(e) => setPlace(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") load();
+          }}
+          style={{
+            width: "100%",
+            font: "inherit",
+            padding: "8px 10px",
+            borderRadius: 8,
+            border: "1px solid var(--hairline, #d8d4cc)",
+            background: "transparent",
+          }}
+        />
+      </label>
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Area</span>
+        {slider("Radius", radiusKm, 1, 24, 0.5, setRadiusKm, " km")}
+        <div
+          className="specimen-tree__actions"
+          style={{ flexWrap: "wrap" }}
+        >
+          <button
+            type="button"
+            className="btn"
+            onClick={loadSaved}
+            disabled={loading}
+          >
+            SF (saved)
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={load}
+            disabled={loading}
+          >
+            {loading ? "Loading…" : "Fetch this place"}
+          </button>
+        </div>
+      </div>
+
+      <div className="specimen-tree__group rail-section">
+        <span className="specimen-tree__group-title">Render</span>
+        <label
+          className="tool-param-row has-tip"
+          data-tip="Thin the roads from dense to sparse toward the bottom"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span className="tool-param-row__label">Fade</span>
+          <span className={`toggle-switch${fade ? " is-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={fade}
+              onChange={(e) => setFade(e.target.checked)}
+              disabled={!data}
+              style={{
+                position: "absolute",
+                opacity: 0,
+                inset: 0,
+                cursor: "pointer",
+              }}
+              aria-label="Toggle fade"
+            />
+            <span className="toggle-switch__track" />
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+        <div className="specimen-tree__sliders">
+          {slider("Line Weight", weight, 0.3, 3, 0.1, setWeight)}
+          {slider("Fill-in Time", speed, 0.5, 8, 0.5, setSpeed, " s")}
+        </div>
+        <label
+          className="tool-param-row"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span className="tool-param-row__label">Hide Highways</span>
+          <span className={`toggle-switch${hideHighways ? " is-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={hideHighways}
+              onChange={(e) => setHideHighways(e.target.checked)}
+              style={{
+                position: "absolute",
+                opacity: 0,
+                inset: 0,
+                cursor: "pointer",
+              }}
+              aria-label="Toggle hide highways"
+            />
+            <span className="toggle-switch__track" />
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+        <label className="tool-param-row tool-color-row">
+          <span className="tool-param-row__label">Stroke Color</span>
+          <span className="tool-color-row__inputs">
+            <input
+              type="color"
+              className="tool-color-row__swatch"
+              value={safeColor(ink, INK)}
+              onChange={(e) => setInk(e.target.value)}
+            />
+            <input
+              type="text"
+              className="tool-color-row__hex"
+              value={ink}
+              spellCheck={false}
+              maxLength={7}
+              onChange={(e) =>
+                setInk(
+                  e.target.value.startsWith("#")
+                    ? e.target.value
+                    : `#${e.target.value}`,
+                )
+              }
+            />
+          </span>
+        </label>
+      </div>
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">Background</span>
+        <label className="tool-param-row tool-color-row">
+          <span className="tool-param-row__label">Color</span>
+          <span className="tool-color-row__inputs">
+            <input
+              type="color"
+              className="tool-color-row__swatch"
+              value={safeColor(bg, BG)}
+              onChange={(e) => setBg(e.target.value)}
+            />
+            <input
+              type="text"
+              className="tool-color-row__hex"
+              value={bg}
+              spellCheck={false}
+              maxLength={7}
+              onChange={(e) =>
+                setBg(
+                  e.target.value.startsWith("#")
+                    ? e.target.value
+                    : `#${e.target.value}`,
+                )
+              }
+            />
+          </span>
+        </label>
+        <div
+          className="specimen-tree__actions"
+          style={{ flexWrap: "wrap" }}
+        >
+          <label className="btn" style={{ cursor: "pointer" }}>
+            {shapeImage ? "Replace image" : "Add image"}
+            <input
+              type="file"
+              accept="image/*,.svg"
+              onChange={onPickShape}
+              style={{ display: "none" }}
+            />
+          </label>
+          {shapeImage && (
+            <button type="button" className="btn" onClick={clearShape}>
+              Remove
+            </button>
+          )}
+        </div>
+        {shapeImage && (
+          <span className="specimen-tree__upload-name">
+            {shapeImageName}
+          </span>
+        )}
+        <p
+          className="specimen-tree__upload-name"
+          style={{ margin: "8px 0 0" }}
+        >
+          PNG or SVG silhouette — the road map fills inside the shape.
+        </p>
+      </div>
+
+      {data && (
+        <div className="specimen-tree__group">
+          <span className="specimen-tree__group-title">
+            {data.ways.filter(keepWay).length} of {data.ways.length} roads
+          </span>
+        </div>
+      )}
+
+      <div className="specimen-tree__actions specimen-tree__actions--export rail-section">
+        <ExportButtons
+          onPNG={downloadPNG}
+          onSVG={downloadSVG}
+          disabled={!data}
+        />
+        <RecordButton
+          recording={recorder.recording}
+          supported={recorder.supported}
+          disabled={!data || animating}
+          onStart={startRecord}
+          onStop={stopRecord}
+        />
+      </div>
+
+      {status.kind === "error" && (
+        <p style={{ color: "#fe4d64", fontSize: 13, margin: 0 }}>
+          {status.msg}
+        </p>
+      )}
+      {loading && (
+        <p style={{ fontSize: 13, margin: 0, opacity: 0.7 }}>
+          {status.msg}
+        </p>
+      )}
+    </>
+  );
+
   return (
     <>
       <header className="tool-page__header tool-page__header--row">
-        <h1 className="tool-page__title">Map</h1>
         <div className="specimen-tree__actions" style={{ marginTop: 0 }}>
           <button
             type="button"
@@ -709,229 +946,18 @@ export default function RoadColors() {
           >
             Grow
           </button>
-          <button
-            type="button"
-            className={`btn${fade ? " is-active" : ""}`}
-            aria-pressed={fade}
-            onClick={() => setFade((f) => !f)}
-            disabled={!data}
-            title="Thin the roads from dense to sparse toward the bottom"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 6h16" />
-              <path d="M5 11h14" strokeOpacity="0.7" />
-              <path d="M7 16h10" strokeOpacity="0.4" strokeDasharray="2 2.5" />
-              <path d="M9 20h6" strokeOpacity="0.2" strokeDasharray="1.5 3" />
-            </svg>
-            Fade
-          </button>
-          <RecordButton
-            recording={recorder.recording}
-            supported={recorder.supported}
-            disabled={!data || animating}
-            onStart={startRecord}
-            onStop={stopRecord}
-          />
-          <ExportButtons
-            onPNG={downloadPNG}
-            onSVG={downloadSVG}
-            disabled={!data}
-          />
         </div>
       </header>
 
+      {controlsTarget ? createPortal(controls, controlsTarget) : null}
+
       <section
-        className="specimen-tree specimen-tree--viewport"
+        className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
         aria-label="Map canvas"
       >
-        <aside className="specimen-tree__controls">
-          <label className="tool-param-row">
-            <span className="tool-param-row__label">city</span>
-            <input
-              type="text"
-              value={place}
-              spellCheck={false}
-              onChange={(e) => setPlace(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") load();
-              }}
-              style={{
-                width: "100%",
-                font: "inherit",
-                padding: "8px 10px",
-                borderRadius: 8,
-                border: "1px solid var(--hairline, #d8d4cc)",
-                background: "transparent",
-              }}
-            />
-          </label>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">area</span>
-            {/* Single slider — render full-width rather than in the 2-column
-                grid, where it would sit orphaned in the left half. */}
-            {slider("radius", radiusKm, 1, 24, 0.5, setRadiusKm, " km")}
-            <div
-              className="specimen-tree__actions"
-              style={{ flexWrap: "wrap" }}
-            >
-              <button
-                type="button"
-                className="btn"
-                onClick={loadSaved}
-                disabled={loading}
-              >
-                SF (saved)
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={load}
-                disabled={loading}
-              >
-                {loading ? "Loading…" : "Fetch this place"}
-              </button>
-            </div>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">render</span>
-            <div className="specimen-tree__sliders">
-              {slider("line weight", weight, 0.3, 3, 0.1, setWeight)}
-              {slider("fill-in time", speed, 0.5, 8, 0.5, setSpeed, " s")}
-            </div>
-            <label
-              className="tool-param-row"
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              }}
-            >
-              <span className="tool-param-row__label">hide highways</span>
-              <span className={`toggle-switch${hideHighways ? " is-on" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={hideHighways}
-                  onChange={(e) => setHideHighways(e.target.checked)}
-                  style={{
-                    position: "absolute",
-                    opacity: 0,
-                    inset: 0,
-                    cursor: "pointer",
-                  }}
-                  aria-label="Toggle hide highways"
-                />
-                <span className="toggle-switch__track" />
-                <span className="toggle-switch__thumb" />
-              </span>
-            </label>
-            <label className="tool-param-row tool-color-row">
-              <span className="tool-param-row__label">stroke color</span>
-              <span className="tool-color-row__inputs">
-                <input
-                  type="color"
-                  className="tool-color-row__swatch"
-                  value={safeColor(ink, INK)}
-                  onChange={(e) => setInk(e.target.value)}
-                />
-                <input
-                  type="text"
-                  className="tool-color-row__hex"
-                  value={ink}
-                  spellCheck={false}
-                  maxLength={7}
-                  onChange={(e) =>
-                    setInk(
-                      e.target.value.startsWith("#")
-                        ? e.target.value
-                        : `#${e.target.value}`,
-                    )
-                  }
-                />
-              </span>
-            </label>
-          </div>
-
-          <div className="specimen-tree__group">
-            <span className="specimen-tree__group-title">background</span>
-            <label className="tool-param-row tool-color-row">
-              <span className="tool-param-row__label">color</span>
-              <span className="tool-color-row__inputs">
-                <input
-                  type="color"
-                  className="tool-color-row__swatch"
-                  value={safeColor(bg, BG)}
-                  onChange={(e) => setBg(e.target.value)}
-                />
-                <input
-                  type="text"
-                  className="tool-color-row__hex"
-                  value={bg}
-                  spellCheck={false}
-                  maxLength={7}
-                  onChange={(e) =>
-                    setBg(
-                      e.target.value.startsWith("#")
-                        ? e.target.value
-                        : `#${e.target.value}`,
-                    )
-                  }
-                />
-              </span>
-            </label>
-            <div
-              className="specimen-tree__actions"
-              style={{ flexWrap: "wrap" }}
-            >
-              <label className="btn" style={{ cursor: "pointer" }}>
-                {shapeImage ? "Replace image" : "Add image"}
-                <input
-                  type="file"
-                  accept="image/*,.svg"
-                  onChange={onPickShape}
-                  style={{ display: "none" }}
-                />
-              </label>
-              {shapeImage && (
-                <button type="button" className="btn" onClick={clearShape}>
-                  Remove
-                </button>
-              )}
-            </div>
-            {shapeImage && (
-              <span className="specimen-tree__upload-name">
-                {shapeImageName}
-              </span>
-            )}
-            <p
-              className="specimen-tree__upload-name"
-              style={{ margin: "8px 0 0" }}
-            >
-              PNG or SVG silhouette — the road map fills inside the shape.
-            </p>
-          </div>
-
-          {data && (
-            <div className="specimen-tree__group">
-              <span className="specimen-tree__group-title">
-                {data.ways.filter(keepWay).length} of {data.ways.length} roads
-              </span>
-            </div>
-          )}
-
-          {status.kind === "error" && (
-            <p style={{ color: "#fe4d64", fontSize: 13, margin: 0 }}>
-              {status.msg}
-            </p>
-          )}
-          {loading && (
-            <p style={{ fontSize: 13, margin: 0, opacity: 0.7 }}>
-              {status.msg}
-            </p>
-          )}
-        </aside>
+        {!controlsTarget && (
+          <aside className="specimen-tree__controls">{controls}</aside>
+        )}
 
         <div
           className="specimen-tree__canvas-wrap"

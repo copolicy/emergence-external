@@ -29,11 +29,11 @@ export interface ContourParams {
 }
 
 export const DEFAULT_CONTOUR: ContourParams = {
-  seed: 3312,
-  fieldScale: 3.5,
+  seed: 79581,
+  fieldScale: 2,
   octaves: 3,
-  warp: 0.55,
-  levels: 13,
+  warp: 0.95,
+  levels: 11,
   lineWidth: 1,
   imageInfluence: 0.8,
   contrast: 1.1,
@@ -51,14 +51,14 @@ export const CONTOUR_RANGES: Record<keyof ContourParams, [number, number, number
 };
 
 export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
-  seed: "seed",
-  fieldScale: "field scale",
-  octaves: "detail",
-  warp: "meander",
-  levels: "levels",
-  lineWidth: "stroke",
-  imageInfluence: "image shape",
-  contrast: "contrast",
+  seed: "Seed",
+  fieldScale: "Field Scale",
+  octaves: "Detail",
+  warp: "Meander",
+  levels: "Density",
+  lineWidth: "Line Weight",
+  imageInfluence: "Image Shape",
+  contrast: "Contrast",
 };
 
 export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
@@ -71,6 +71,14 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   imageInfluence: "How strongly the image's tone shapes the terrain. Zero is pure noise; one bands the picture.",
   contrast: "Tone curve for the image. Above 1 deepens the shadows into denser contours.",
 };
+
+// The only sliders exposed in the UI. Every other param stays at its default.
+// "density" is the number of contour lines; "line weight" is the stroke width.
+export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
+  "seed",
+  "levels",
+  "lineWidth",
+];
 
 export const SLIDER_KEYS_FIELD: (keyof ContourParams)[] = [
   "seed",

@@ -44,17 +44,17 @@ export interface FlowParams {
 }
 
 export const DEFAULT_FLOW: FlowParams = {
-  seed: 7421,
+  seed: 70725,
   fieldScale: 4,
-  swirl: 1.2,
+  swirl: 1,
   turbulence: 2,
-  drift: 0,
-  spacing: 9,
-  stepLen: 4,
-  maxLen: 220,
+  drift: -30,
+  spacing: 8,
+  stepLen: 6,
+  maxLen: 400,
   lineWidth: 1,
-  widthVar: 0.35,
-  jitter: 0.5,
+  widthVar: 0.1,
+  jitter: 1,
   arrowSize: 4,
   emergeX: 0.5,
   emergeY: 0,
@@ -123,28 +123,28 @@ export const FLOW_RANGES: Record<
 };
 
 export const FLOW_LABELS: Record<keyof FlowParams, string> = {
-  seed: "seed",
-  fieldScale: "field scale",
-  swirl: "swirl",
-  turbulence: "turbulence",
-  drift: "drift",
-  spacing: "spacing",
-  stepLen: "step",
-  maxLen: "length",
-  lineWidth: "stroke",
-  widthVar: "width var",
-  jitter: "scatter",
-  arrowSize: "arrow size",
-  emergeX: "emerge x",
-  emergeY: "emerge y",
-  emergeReach: "reach",
-  emergeSpread: "spread",
-  emergeRoots: "roots",
-  emergeNest: "nested",
-  emergeFragments: "fragments",
-  imageInfluence: "image steer",
-  threshold: "threshold",
-  contrast: "contrast",
+  seed: "Seed",
+  fieldScale: "Field Scale",
+  swirl: "Swirl",
+  turbulence: "Turbulence",
+  drift: "Drift",
+  spacing: "Density",
+  stepLen: "Step",
+  maxLen: "Length",
+  lineWidth: "Line Weight",
+  widthVar: "Width Var",
+  jitter: "Scatter",
+  arrowSize: "Arrow Size",
+  emergeX: "Emerge X",
+  emergeY: "Emerge Y",
+  emergeReach: "Reach",
+  emergeSpread: "Spread",
+  emergeRoots: "Roots",
+  emergeNest: "Nested",
+  emergeFragments: "Fragments",
+  imageInfluence: "Image Steer",
+  threshold: "Threshold",
+  contrast: "Contrast",
 };
 
 export const FLOW_HINTS: Record<keyof FlowParams, string> = {
@@ -173,6 +173,15 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
   threshold: "Brightness cutoff. Raise it to drop lines out of the lightest areas.",
   contrast: "Tone curve. Above 1 concentrates lines in the shadows.",
 };
+
+// The only sliders exposed in the UI. Every other param stays at its default.
+// "density" is line spacing (lower packs the field denser); "line weight" is
+// the stroke width.
+export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
+  "seed",
+  "spacing",
+  "lineWidth",
+];
 
 export const SLIDER_KEYS_FIELD: (keyof FlowParams)[] = [
   "seed",

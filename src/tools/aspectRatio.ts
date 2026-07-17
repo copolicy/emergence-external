@@ -15,7 +15,7 @@ export const SIZE_PRESETS: SizePreset[] = [
   { id: "1080x1920", label: "9:16", w: 1080, h: 1920 },
 ];
 
-export const DEFAULT_PRESET_ID = "1920x1080";
+export const DEFAULT_PRESET_ID = "1080x1080";
 
 export type CanvasSizeConfig =
   | { mode: "preset"; presetId: string }
