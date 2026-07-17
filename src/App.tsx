@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import wordmark from './assets/copo-watermark.png';
+import logo from './assets/emergence-logo.png';
 import RootBrush from './tools/RootBrush';
 import FlowField from './tools/FlowField';
 import Jagged from './tools/Jagged';
@@ -57,7 +58,7 @@ export default function App() {
       <header className="app-header">
         <div className="app-header__brand">
           <img
-            src="/emergence-logo.png"
+            src={logo}
             alt="Emergence"
             className="app-header__logo"
           />
