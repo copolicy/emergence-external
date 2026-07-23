@@ -40,20 +40,20 @@ export interface RootParams {
 }
 
 export const DEFAULT_ROOT: RootParams = {
-  seed: 1207,
+  seed: 38928,
   crowns: 1,
-  density: 1700,
+  density: 1350,
   downwardBias: 0.35,
   lateralReach: 42,
   taprootThickness: 1.5,
-  thickness: 0.12,
+  thickness: 0.13,
   // Gentle end shaping and moderate tendril curl.
   taper: 0.14,
   coil: 0.25,
   endThickness: 2.6,
   // Ink treatment defaults matched against the handoff PSD reference.
-  stamp: 0.16,
-  cutout: 0.34,
+  stamp: 0.34,
+  cutout: 0.26,
   // Root Brush's organic mode is clean linework — no mycelial hair layer.
   // (The Health tool keeps its own mycelium via a separate default.)
   hairDensity: 0,
@@ -1191,9 +1191,18 @@ export interface StampOpts {
 const STAMP_BLUR_MAX = 5;
 const STAMP_THRESHOLD = 0.08;
 const CUTOUT_BLUR_MAX = 3;
-// Erode/dilate by one blur sigma: Φ(±1) of the blurred edge profile.
-const CUTOUT_ERODE_CUT = 0.841;
-const CUTOUT_DILATE_CUT = 0.159;
+// Erode by ~0.55σ (Φ(0.55) of the blurred edge profile): a full sigma erodes
+// the entire half-width of these thin strokes and wipes the drawing; 0.55σ
+// pinches only genuinely thin spots. Dilate back slightly MORE (~0.75σ) —
+// the surplus pre-compensates the final smoothing pass below.
+const CUTOUT_ERODE_CUT = 0.709;
+const CUTOUT_DILATE_CUT = 0.227;
+// Final pass, echoing Photoshop's order (Stamp smooths AFTER Cutout breaks):
+// a gentle blur + 50% cut that cleans the ragged nicks the erode leaves and
+// rounds the ends of the broken fragments. Runs at a fraction of the cutout
+// radius; the 50% cut's slight thinning is absorbed by the over-dilation.
+const CUTOUT_SMOOTH_SCALE = 0.7;
+const CUTOUT_SMOOTH_CUT = 0.5;
 
 // Offscreens reused across frames so the growth animation doesn't allocate
 // two full canvases per tick.
@@ -1333,18 +1342,27 @@ export function drawRoots(
   // weight. Reuses `src` as scratch. Skipped at zero.
   let final = out;
   if (stamp.cutout > 0) {
-    const blur = `blur(${stamp.cutout * CUTOUT_BLUR_MAX * dpr}px)`;
+    const r = stamp.cutout * CUTOUT_BLUR_MAX * dpr;
+    // Erode: out → src.
     sctx.setTransform(1, 0, 0, 1, 0, 0);
     sctx.clearRect(0, 0, pw, ph);
-    sctx.filter = blur;
+    sctx.filter = `blur(${r}px)`;
     sctx.drawImage(out, 0, 0);
     sctx.filter = "none";
     thresholdAlpha(sctx, CUTOUT_ERODE_CUT);
+    // Dilate (slightly over): src → out.
     octx.clearRect(0, 0, pw, ph);
-    octx.filter = blur;
+    octx.filter = `blur(${r}px)`;
     octx.drawImage(src, 0, 0);
     octx.filter = "none";
     thresholdAlpha(octx, CUTOUT_DILATE_CUT);
+    // Smooth: out → src — cleans nicks, rounds fragment ends.
+    sctx.clearRect(0, 0, pw, ph);
+    sctx.filter = `blur(${r * CUTOUT_SMOOTH_SCALE}px)`;
+    sctx.drawImage(out, 0, 0);
+    sctx.filter = "none";
+    thresholdAlpha(sctx, CUTOUT_SMOOTH_CUT);
+    final = src;
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1384,15 +1402,18 @@ export function buildRootsSVG(
     let fx =
       `<feGaussianBlur stdDeviation="${f(stamp.amount * STAMP_BLUR_MAX)}"/>` +
       `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * STAMP_THRESHOLD)}"/></feComponentTransfer>`;
-    // Cutout pass (opening): erode then dilate by the same radius, so thin
-    // spots break but the surviving ink keeps its weight.
+    // Cutout pass (opening + smooth): erode to break thin spots, over-dilate
+    // to restore weight, then a gentle 50% smooth to clean nicks and round
+    // the fragment ends.
     if (stamp.cutout > 0) {
-      const cb = `<feGaussianBlur stdDeviation="${f(stamp.cutout * CUTOUT_BLUR_MAX)}"/>`;
+      const r = stamp.cutout * CUTOUT_BLUR_MAX;
+      const step = (cut: number, sd: number) =>
+        `<feGaussianBlur stdDeviation="${f(sd)}"/>` +
+        `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * cut)}"/></feComponentTransfer>`;
       fx +=
-        cb +
-        `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * CUTOUT_ERODE_CUT)}"/></feComponentTransfer>` +
-        cb +
-        `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * CUTOUT_DILATE_CUT)}"/></feComponentTransfer>`;
+        step(CUTOUT_ERODE_CUT, r) +
+        step(CUTOUT_DILATE_CUT, r) +
+        step(CUTOUT_SMOOTH_CUT, r * CUTOUT_SMOOTH_SCALE);
     }
     parts.push(
       `<defs><filter id="stamp" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">${fx}</filter></defs>`,
