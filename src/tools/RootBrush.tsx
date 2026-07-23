@@ -90,15 +90,30 @@ export default function RootBrush({
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
+  // Treatment render quality: dropped while sliders scrub, 1 at rest.
+  const qualityRef = useRef(1);
+  const settleTimer = useRef<number | undefined>(undefined);
+  const [settleTick, setSettleTick] = useState(0);
 
   const buf = useMemo(
     () => (image ? sampleLuminance(image, w, h) : null),
     [image, w, h],
   );
 
+  // Stamp/cutout are render-only treatment passes — scrubbing them must not
+  // re-run the (expensive) growth engine, so they're excluded from the deps.
   const result = useMemo(
     () => growRoots(w, h, params, buf, brush),
-    [w, h, params, buf, brush],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      w,
+      h,
+      buf,
+      brush,
+      ...Object.entries(params)
+        .filter(([k]) => k !== "stamp" && k !== "cutout")
+        .map(([, v]) => v),
+    ],
   );
 
   const hasOutput = result.edges.length > 0 || result.hairs.length > 0;
@@ -108,9 +123,13 @@ export default function RootBrush({
   const stampOpts = useMemo(
     () =>
       brush === "organic" && (params.stamp > 0 || params.cutout > 0)
-        ? { amount: params.stamp, cutout: params.cutout }
+        ? {
+            amount: params.stamp,
+            cutout: params.cutout,
+            lineWeight: params.thickness,
+          }
         : undefined,
-    [brush, params.stamp, params.cutout],
+    [brush, params.stamp, params.cutout, params.thickness],
   );
 
   const clampPan = useCallback(
@@ -167,9 +186,10 @@ export default function RootBrush({
       growth,
       true,
       brush,
-      stampOpts,
+      stampOpts && { ...stampOpts, quality: qualityRef.current },
     );
-  }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts]);
+    // settleTick re-runs the draw at full quality after scrubbing stops.
+  }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts, settleTick]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -177,19 +197,43 @@ export default function RootBrush({
     canvas.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
   }, [pan, isFullscreen]);
 
+  // All draw triggers funnel through one rAF-coalesced scheduler: several
+  // state changes landing in the same tick (slider scrub + settle + resize)
+  // produce ONE render instead of stacking full treatment pipelines.
+  const drawRef = useRef(draw);
   useEffect(() => {
-    draw();
-  }, [draw]);
+    drawRef.current = draw;
+  });
+  const drawRaf = useRef(0);
+  const scheduleDraw = useCallback(() => {
+    cancelAnimationFrame(drawRaf.current);
+    drawRaf.current = requestAnimationFrame(() => drawRef.current());
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(drawRaf.current), []);
+
+  useEffect(() => {
+    scheduleDraw();
+  }, [draw, scheduleDraw]);
 
   // Redraw when the inline preview's layout size changes, since the backing
-  // store tracks the displayed size.
+  // store tracks the displayed size. Ignores sub-pixel jitter so canvas
+  // reallocation can't feed back into the observer.
   useEffect(() => {
     const wrap = canvasWrapRef.current;
     if (!wrap || isFullscreen) return;
-    const ro = new ResizeObserver(() => draw());
+    let lastW = 0;
+    let lastH = 0;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      if (Math.abs(r.width - lastW) < 1 && Math.abs(r.height - lastH) < 1)
+        return;
+      lastW = r.width;
+      lastH = r.height;
+      scheduleDraw();
+    });
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [draw, isFullscreen]);
+  }, [isFullscreen, scheduleDraw]);
 
   useEffect(() => {
     if (!growing) return;
@@ -335,15 +379,25 @@ export default function RootBrush({
   };
   useEffect(() => {
     if (recorder.recording) return;
-    draw();
-  }, [recorder.recording, draw]);
+    scheduleDraw();
+  }, [recorder.recording, scheduleDraw]);
 
   const updateParam = useCallback(
     <K extends keyof RootParams>(key: K, value: RootParams[K]) => {
+      // Scrub at reduced treatment resolution so slider drags stay fluid;
+      // settle back to full quality shortly after the last movement.
+      qualityRef.current = 0.5;
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => {
+        qualityRef.current = 1;
+        setSettleTick((t) => t + 1);
+      }, 160);
       setParams((prev) => ({ ...prev, [key]: value }));
     },
     [],
   );
+
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
 
   const reset = () => {
     setGrowing(false);
@@ -387,6 +441,9 @@ export default function RootBrush({
     if (!hasOutput) return;
     // Pure magnification of the preview — same result, scaled through the
     // transform, one clean downscale. WYSIWYG, no aliasing from re-growth.
+    // With the stamp treatment the ink comes from a fixed-resolution bitmap,
+    // so supersampling only adds a resample generation — render 1:1 instead.
+    const ss = stampOpts ? 1 : undefined;
     void renderMagnifiedPngBlob(exportDims.w, exportDims.h, w, h, (ctx, scale) => {
       drawRoots(
         ctx,
@@ -401,7 +458,7 @@ export default function RootBrush({
         brush,
         stampOpts,
       );
-    }).then((blob) => blob && download(blob, "png"));
+    }, ss).then((blob) => blob && download(blob, "png"));
   };
 
   const renderRow = (key: keyof RootParams) => {
@@ -467,9 +524,7 @@ export default function RootBrush({
       header={brushHeader}
       config={config}
       onConfigChange={setConfig}
-      sliders={SLIDER_KEYS_SIMPLE.filter(
-        (k) => brush === "organic" || (k !== "stamp" && k !== "cutout"),
-      ).map(renderRow)}
+      sliders={SLIDER_KEYS_SIMPLE.map(renderRow)}
       ink={ink}
       background={background}
 

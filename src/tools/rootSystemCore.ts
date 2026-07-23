@@ -46,14 +46,15 @@ export const DEFAULT_ROOT: RootParams = {
   downwardBias: 0.35,
   lateralReach: 42,
   taprootThickness: 1.5,
-  thickness: 0.13,
+  thickness: 0.15,
   // Gentle end shaping and moderate tendril curl.
   taper: 0.14,
   coil: 0.25,
   endThickness: 2.6,
-  // Ink treatment defaults matched against the handoff PSD reference.
+  // Ink treatment values matched against the handoff PSD reference. Locked
+  // in (no UI sliders for now) — the treatment always runs at these.
   stamp: 0.34,
-  cutout: 0.26,
+  cutout: 0.34,
   // Root Brush's organic mode is clean linework — no mycelial hair layer.
   // (The Health tool keeps its own mycelium via a separate default.)
   hairDensity: 0,
@@ -93,7 +94,7 @@ export const ROOT_LABELS: Record<keyof RootParams, string> = {
   coil: "Coil",
   endThickness: "End Thickness",
   stamp: "Stamp",
-  cutout: "Cutout",
+  cutout: "Line Breaks",
   hairDensity: "Mycelium",
   bedrockOffset: "Bedrock",
   threshold: "Threshold",
@@ -140,8 +141,6 @@ export const SLIDER_KEYS_SIMPLE: (keyof RootParams)[] = [
   "seed",
   "density",
   "thickness",
-  "stamp",
-  "cutout",
 ];
 
 export const SLIDER_KEYS_GROW: (keyof RootParams)[] = [
@@ -1176,7 +1175,21 @@ function strokeRootSegment(
 export interface StampOpts {
   amount: number; // 0..1 — stamp fatten/smooth pass. 0 skips the pass.
   cutout: number; // 0..1 — cutout break/simplify pass. 0 skips the pass.
+  // Line weight (`thickness`) the treatment runs against. Both pass radii
+  // scale with it, so the treatment CHARACTER — how smoothed the ink is and
+  // how often it breaks — stays the same at every weight, and the Line
+  // Weight slider changes only the scale of the ink. Without this, thicker
+  // lines resist the same cutout radius and the breaks vanish.
+  lineWeight?: number;
+  // Internal resolution the treatment runs at, 0..1 of full (default 1).
+  // The pipeline needs several blur + pixel-readback rounds per frame, so
+  // slider scrubbing drops this for responsiveness and settles at 1.
+  quality?: number;
 }
+
+// Line weight the treatment radii were tuned at; `lineWeight` is normalized
+// against this, so the tuned defaults render identically.
+const TREATMENT_WEIGHT_REF = 0.13;
 
 // Blur radii in preview-space px at each slider's max, and the alpha cut
 // levels. Both sliders map linearly onto their radius, independently:
@@ -1204,8 +1217,35 @@ const CUTOUT_DILATE_CUT = 0.227;
 const CUTOUT_SMOOTH_SCALE = 0.7;
 const CUTOUT_SMOOTH_CUT = 0.5;
 
-// Offscreens reused across frames so the growth animation doesn't allocate
-// two full canvases per tick.
+// The treatment always runs at this fixed resolution multiplier over the
+// PREVIEW-space dimensions, regardless of the output canvas resolution.
+// Blur + threshold is not scale-invariant (sub-pixel anti-aliased strokes
+// fatten and break differently at different raster scales), so rendering
+// the treatment once at a reference scale and stretching the result is what
+// makes preview, PNG, MP4, and the traced SVG all show the SAME ink — same
+// weights, same breaks.
+const TREATMENT_DPR = 2;
+
+/** The blur+threshold steps for a given treatment, radii in preview px. */
+function stampSteps(stamp: StampOpts): { blur: number; cut: number }[] {
+  const tScale =
+    (stamp.lineWeight ?? TREATMENT_WEIGHT_REF) / TREATMENT_WEIGHT_REF;
+  const steps = [
+    { blur: stamp.amount * STAMP_BLUR_MAX * tScale, cut: STAMP_THRESHOLD },
+  ];
+  if (stamp.cutout > 0) {
+    const r = stamp.cutout * CUTOUT_BLUR_MAX * tScale;
+    steps.push(
+      { blur: r, cut: CUTOUT_ERODE_CUT },
+      { blur: r, cut: CUTOUT_DILATE_CUT },
+      { blur: r * CUTOUT_SMOOTH_SCALE, cut: CUTOUT_SMOOTH_CUT },
+    );
+  }
+  return steps;
+}
+
+// Ping-pong offscreens reused across frames so the growth animation doesn't
+// allocate full canvases per tick.
 let stampSrc: HTMLCanvasElement | null = null;
 let stampOut: HTMLCanvasElement | null = null;
 
@@ -1290,34 +1330,65 @@ export function drawRoots(
     return;
   }
 
-  // Stamp path: paint the same strokes onto a transparent offscreen at device
-  // resolution, blur it, then hard-threshold the alpha back into solid ink.
-  const pw = ctx.canvas.width;
-  const ph = ctx.canvas.height;
-  const src = (stampSrc ??= document.createElement("canvas"));
-  const out = (stampOut ??= document.createElement("canvas"));
-  if (src.width !== pw || src.height !== ph) {
-    src.width = pw;
-    src.height = ph;
-    out.width = pw;
-    out.height = ph;
+  // Treatment runs at the fixed reference resolution (see TREATMENT_DPR) and
+  // is stretched onto the output canvas — preview, PNG, and MP4 all composite
+  // the SAME treated ink.
+  const treated = runStampPipeline(w, h, result, ink, progress, brush, stamp);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(
+    treated.canvas,
+    0,
+    0,
+    treated.pw,
+    treated.ph,
+    0,
+    0,
+    ctx.canvas.width,
+    ctx.canvas.height,
+  );
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+interface StampRender {
+  canvas: HTMLCanvasElement;
+  pw: number;
+  ph: number;
+  tDpr: number;
+  /** With `captureField`: the last blur's alpha (pre-cut) and its iso level. */
+  field?: Uint8ClampedArray;
+  iso?: number;
+}
+
+/**
+ * Execute the stamp/cutout blur+threshold chain over the painted strokes at
+ * TREATMENT_DPR × preview resolution (× `quality` while scrubbing).
+ * With `captureField`, the FINAL threshold is skipped and the smooth blurred
+ * alpha is returned instead — its iso contour is the exact treated outline,
+ * which the SVG export traces into real vector paths.
+ */
+function runStampPipeline(
+  w: number,
+  h: number,
+  result: RootResult,
+  ink: string,
+  progress: number,
+  brush: RootBrush,
+  stamp: StampOpts,
+  captureField = false,
+): StampRender {
+  const q = Math.min(1, Math.max(0.3, stamp.quality ?? 1));
+  const tDpr = TREATMENT_DPR * q;
+  const pw = Math.max(1, Math.round(w * tDpr));
+  const ph = Math.max(1, Math.round(h * tDpr));
+  const a = (stampSrc ??= document.createElement("canvas"));
+  const b = (stampOut ??= document.createElement("canvas"));
+  if (a.width !== pw || a.height !== ph) {
+    a.width = pw;
+    a.height = ph;
+    b.width = pw;
+    b.height = ph;
   }
-  const sctx = src.getContext("2d")!;
-  sctx.setTransform(1, 0, 0, 1, 0, 0);
-  sctx.clearRect(0, 0, pw, ph);
-  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  paintRootStrokes(sctx, result, ink, progress, brush);
 
-  // Blur in device px so preview and magnified exports get the same spread
-  // relative to the strokes.
-  const octx = out.getContext("2d")!;
-  octx.setTransform(1, 0, 0, 1, 0, 0);
-  octx.clearRect(0, 0, pw, ph);
-  octx.filter = `blur(${stamp.amount * STAMP_BLUR_MAX * dpr}px)`;
-  octx.drawImage(src, 0, 0);
-  octx.filter = "none";
-
-  // Hard threshold: alpha snaps to solid ink or nothing.
   const [ir, ig, ib] = parseInk(ink);
   const thresholdAlpha = (tctx: CanvasRenderingContext2D, cut: number) => {
     const img = tctx.getImageData(0, 0, pw, ph);
@@ -1335,39 +1406,234 @@ export function drawRoots(
     }
     tctx.putImageData(img, 0, 0);
   };
-  thresholdAlpha(octx, STAMP_THRESHOLD);
 
-  // Cutout pass (opening): erode then dilate by the same radius. Thin spots
-  // pinch into breaks; everything that survives returns to its original
-  // weight. Reuses `src` as scratch. Skipped at zero.
-  let final = out;
-  if (stamp.cutout > 0) {
-    const r = stamp.cutout * CUTOUT_BLUR_MAX * dpr;
-    // Erode: out → src.
-    sctx.setTransform(1, 0, 0, 1, 0, 0);
-    sctx.clearRect(0, 0, pw, ph);
-    sctx.filter = `blur(${r}px)`;
-    sctx.drawImage(out, 0, 0);
-    sctx.filter = "none";
-    thresholdAlpha(sctx, CUTOUT_ERODE_CUT);
-    // Dilate (slightly over): src → out.
-    octx.clearRect(0, 0, pw, ph);
-    octx.filter = `blur(${r}px)`;
-    octx.drawImage(src, 0, 0);
-    octx.filter = "none";
-    thresholdAlpha(octx, CUTOUT_DILATE_CUT);
-    // Smooth: out → src — cleans nicks, rounds fragment ends.
-    sctx.clearRect(0, 0, pw, ph);
-    sctx.filter = `blur(${r * CUTOUT_SMOOTH_SCALE}px)`;
-    sctx.drawImage(out, 0, 0);
-    sctx.filter = "none";
-    thresholdAlpha(sctx, CUTOUT_SMOOTH_CUT);
-    final = src;
+  const actx = a.getContext("2d")!;
+  actx.setTransform(1, 0, 0, 1, 0, 0);
+  actx.clearRect(0, 0, pw, ph);
+  actx.setTransform(tDpr, 0, 0, tDpr, 0, 0);
+  paintRootStrokes(actx, result, ink, progress, brush);
+
+  const steps = stampSteps(stamp);
+  let cur = a;
+  for (let i = 0; i < steps.length; i++) {
+    const dst = cur === a ? b : a;
+    const dctx = dst.getContext("2d")!;
+    dctx.setTransform(1, 0, 0, 1, 0, 0);
+    dctx.clearRect(0, 0, pw, ph);
+    dctx.filter = `blur(${steps[i].blur * tDpr}px)`;
+    dctx.drawImage(cur, 0, 0);
+    dctx.filter = "none";
+    cur = dst;
+    if (captureField && i === steps.length - 1) {
+      const img = dctx.getImageData(0, 0, pw, ph);
+      const field = new Uint8ClampedArray(pw * ph);
+      for (let p = 0; p < field.length; p++) field[p] = img.data[p * 4 + 3];
+      return {
+        canvas: cur,
+        pw,
+        ph,
+        tDpr,
+        field,
+        iso: Math.max(8, 255 * steps[i].cut),
+      };
+    }
+    thresholdAlpha(dctx, steps[i].cut);
+  }
+  return { canvas: cur, pw, ph, tDpr };
+}
+
+// ---- stamp outline tracing (SVG export) ------------------------------------
+// Marching squares over the pipeline's final blurred alpha field, walked at
+// its threshold iso-level with linear interpolation, yields smooth sub-pixel
+// contours of the treated ink — the exact vector shape of blur + hard cut.
+// Traced into real <path> fills so the SVG needs no filters and survives
+// design tools (Figma, Illustrator) that ignore SVG filter effects.
+function traceStampField(
+  field: Uint8ClampedArray,
+  pw: number,
+  ph: number,
+  iso: number,
+  scale: number,
+): string {
+  // Grid nodes are pixel centers, padded with a zero border so ink touching
+  // the canvas edge still closes into loops.
+  const V = (gx: number, gy: number) =>
+    gx >= 1 && gx <= pw && gy >= 1 && gy <= ph
+      ? field[(gy - 1) * pw + (gx - 1)]
+      : 0;
+
+  const segs: number[] = []; // x1,y1,x2,y2 per segment, grid coords
+  const lerp = (a: number, b: number) => (iso - a) / (b - a);
+
+  for (let cy = 0; cy <= ph; cy++) {
+    for (let cx = 0; cx <= pw; cx++) {
+      const tl = V(cx, cy);
+      const tr = V(cx + 1, cy);
+      const br = V(cx + 1, cy + 1);
+      const bl = V(cx, cy + 1);
+      let code = 0;
+      if (tl >= iso) code |= 1;
+      if (tr >= iso) code |= 2;
+      if (br >= iso) code |= 4;
+      if (bl >= iso) code |= 8;
+      if (code === 0 || code === 15) continue;
+
+      const t = () => [cx + lerp(tl, tr), cy];
+      const r = () => [cx + 1, cy + lerp(tr, br)];
+      const b = () => [cx + lerp(bl, br), cy + 1];
+      const l = () => [cx, cy + lerp(tl, bl)];
+      const add = (p: number[], q2: number[]) =>
+        segs.push(p[0], p[1], q2[0], q2[1]);
+
+      switch (code) {
+        case 1:
+          add(l(), t());
+          break;
+        case 2:
+          add(t(), r());
+          break;
+        case 3:
+          add(l(), r());
+          break;
+        case 4:
+          add(r(), b());
+          break;
+        case 5: {
+          const center = (tl + tr + br + bl) / 4;
+          if (center >= iso) {
+            add(l(), b());
+            add(t(), r());
+          } else {
+            add(l(), t());
+            add(r(), b());
+          }
+          break;
+        }
+        case 6:
+          add(t(), b());
+          break;
+        case 7:
+          add(l(), b());
+          break;
+        case 8:
+          add(l(), b());
+          break;
+        case 9:
+          add(t(), b());
+          break;
+        case 10: {
+          const center = (tl + tr + br + bl) / 4;
+          if (center >= iso) {
+            add(l(), t());
+            add(r(), b());
+          } else {
+            add(t(), r());
+            add(l(), b());
+          }
+          break;
+        }
+        case 11:
+          add(r(), b());
+          break;
+        case 12:
+          add(l(), r());
+          break;
+        case 13:
+          add(t(), r());
+          break;
+        case 14:
+          add(l(), t());
+          break;
+      }
+    }
   }
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.drawImage(final, 0, 0);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Chain segments into closed loops. Shared endpoints are computed from the
+  // same corner values by both adjacent cells, so their float coords match
+  // exactly and a string key joins them.
+  const n = segs.length / 4;
+  const key = (x: number, y: number) => `${x},${y}`;
+  const atPoint = new Map<string, number[]>();
+  for (let i = 0; i < n; i++) {
+    for (const end of [0, 1] as const) {
+      const k = key(segs[i * 4 + end * 2], segs[i * 4 + end * 2 + 1]);
+      const list = atPoint.get(k);
+      if (list) list.push(i);
+      else atPoint.set(k, [i]);
+    }
+  }
+
+  const used = new Uint8Array(n);
+  const loops: number[][] = [];
+  for (let s = 0; s < n; s++) {
+    if (used[s]) continue;
+    used[s] = 1;
+    const pts: number[] = [segs[s * 4], segs[s * 4 + 1]];
+    let cx = segs[s * 4 + 2];
+    let cy = segs[s * 4 + 3];
+    // Follow matching endpoints until the loop closes (or dead-ends).
+    for (;;) {
+      pts.push(cx, cy);
+      const candidates = atPoint.get(key(cx, cy));
+      let next = -1;
+      if (candidates) {
+        for (const c of candidates) {
+          if (!used[c]) {
+            next = c;
+            break;
+          }
+        }
+      }
+      if (next < 0) break;
+      used[next] = 1;
+      if (segs[next * 4] === cx && segs[next * 4 + 1] === cy) {
+        cx = segs[next * 4 + 2];
+        cy = segs[next * 4 + 3];
+      } else {
+        cx = segs[next * 4];
+        cy = segs[next * 4 + 1];
+      }
+    }
+    if (pts.length >= 6) loops.push(pts);
+  }
+
+  // Decimate near-collinear runs (tolerance in treatment-buffer px) so the
+  // path stays a reasonable size without visibly changing the contour.
+  const EPS = 0.35;
+  const f = (v: number) => Math.round((v - 0.5) * scale * 100) / 100;
+  const parts: string[] = [];
+  for (const pts of loops) {
+    const m = pts.length / 2;
+    const kept: number[] = [0];
+    let anchor = 0;
+    for (let i = 1; i < m - 1; i++) {
+      const ax = pts[anchor * 2];
+      const ay = pts[anchor * 2 + 1];
+      const bx2 = pts[(i + 1) * 2];
+      const by2 = pts[(i + 1) * 2 + 1];
+      const px2 = pts[i * 2];
+      const py2 = pts[i * 2 + 1];
+      const dx = bx2 - ax;
+      const dy = by2 - ay;
+      const len = Math.hypot(dx, dy) || 1;
+      const dist = Math.abs((px2 - ax) * dy - (py2 - ay) * dx) / len;
+      if (dist > EPS) {
+        kept.push(i);
+        anchor = i;
+      }
+    }
+    if (kept.length < 3) continue;
+    const d: string[] = [];
+    for (let ki = 0; ki < kept.length; ki++) {
+      const i = kept[ki];
+      d.push(
+        `${ki === 0 ? "M" : "L"}${f(pts[i * 2])} ${f(pts[i * 2 + 1])}`,
+      );
+    }
+    d.push("Z");
+    parts.push(d.join(""));
+  }
+  return parts.join("");
 }
 
 export function buildRootsSVG(
@@ -1390,35 +1656,32 @@ export function buildRootsSVG(
   if (background !== "transparent")
     parts.push(`<rect width="${w}" height="${h}" fill="${background}"/>`);
 
-  // Ink-stamp treatment as a live SVG filter: Gaussian blur spreads the ink,
-  // then a steep linear ramp on alpha re-thresholds it to solid — the same
-  // blur + hard-threshold the canvas path applies per-pixel. The strokes stay
-  // vector underneath; the filter renders the treatment at any scale.
+  // Ink-stamp treatment: rather than embedding an SVG filter chain (which
+  // design tools like Figma and Illustrator ignore, silently dropping the
+  // whole treatment), the treated ink is traced into real vector paths — the
+  // export is self-contained plain geometry, identical to the canvas.
   const useStamp =
     brush === "organic" && !!stamp && (stamp.amount > 0 || stamp.cutout > 0);
   if (useStamp) {
-    const slope = 80; // steepness of the alpha steps
-    // Stamp pass: fatten to bold ink.
-    let fx =
-      `<feGaussianBlur stdDeviation="${f(stamp.amount * STAMP_BLUR_MAX)}"/>` +
-      `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * STAMP_THRESHOLD)}"/></feComponentTransfer>`;
-    // Cutout pass (opening + smooth): erode to break thin spots, over-dilate
-    // to restore weight, then a gentle 50% smooth to clean nicks and round
-    // the fragment ends.
-    if (stamp.cutout > 0) {
-      const r = stamp.cutout * CUTOUT_BLUR_MAX;
-      const step = (cut: number, sd: number) =>
-        `<feGaussianBlur stdDeviation="${f(sd)}"/>` +
-        `<feComponentTransfer><feFuncA type="linear" slope="${slope}" intercept="${f(0.5 - slope * cut)}"/></feComponentTransfer>`;
-      fx +=
-        step(CUTOUT_ERODE_CUT, r) +
-        step(CUTOUT_DILATE_CUT, r) +
-        step(CUTOUT_SMOOTH_CUT, r * CUTOUT_SMOOTH_SCALE);
-    }
-    parts.push(
-      `<defs><filter id="stamp" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">${fx}</filter></defs>`,
+    const treated = runStampPipeline(
+      w,
+      h,
+      result,
+      ink,
+      1,
+      brush,
+      { ...stamp, quality: 1 },
+      true,
     );
-    parts.push(`<g filter="url(#stamp)">`);
+    const d = traceStampField(
+      treated.field!,
+      treated.pw,
+      treated.ph,
+      treated.iso!,
+      1 / treated.tDpr,
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
   }
 
   // Mycelium group — faint hairs.
@@ -1457,8 +1720,6 @@ export function buildRootsSVG(
     }
     parts.push(`</g>`);
   }
-
-  if (useStamp) parts.push(`</g>`);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
 }
