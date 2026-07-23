@@ -317,14 +317,16 @@ export default function RoadColors({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
-  // Style / view / size change → instant redraw, no animation. Skip while a
-  // fill-in is in flight so the fresh-fetch animation isn't cancelled at start.
+  // Style / view / size change → instant redraw, no animation. Waits out an
+  // in-flight fill-in (so the fresh-fetch animation isn't cancelled at start),
+  // then re-fires when `animating` flips false — a size picked mid-draw is
+  // applied at animation end instead of being silently dropped.
   useEffect(() => {
-    if (rafRef.current) return;
+    if (animating) return;
     const d = dataRef.current;
     if (d) renderStatic(d);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, bg, view, ink, fade, w, h]);
+  }, [weight, bg, view, ink, fade, w, h, animating]);
 
   // Load the saved Bay Area snapshot (no network round-trip to Overpass).
   const loadSaved = useCallback(async () => {

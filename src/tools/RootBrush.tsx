@@ -26,6 +26,12 @@ import {
 } from "./rootSystemCore";
 
 const GROWTH_MS = 12000;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 6;
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, n));
+}
 
 /** Largest axis-aligned rect with aspect `contentW:contentH` inside a viewport. */
 function viewportFitSize(
@@ -67,8 +73,11 @@ export default function RootBrush({
 }: RootBrushProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panning, setPanning] = useState(false);
   const { w, h, exportDims, pxScale, config, setConfig } = useCanvasDimensions(RW, RH);
   const [params, setParams] = useState<RootParams>(DEFAULT_ROOT);
   const [brushState, setBrushState] = useState<Brush>("organic");
@@ -94,6 +103,16 @@ export default function RootBrush({
 
   const hasOutput = result.edges.length > 0 || result.hairs.length > 0;
 
+  const clampPan = useCallback(
+    (x: number, y: number, z: number) => {
+      const { dw, dh } = viewportFitSize(w, h, window.innerWidth, window.innerHeight);
+      const maxX = Math.max(0, (dw * z - window.innerWidth) / 2 + 24);
+      const maxY = Math.max(0, (dh * z - window.innerHeight) / 2 + 24);
+      return { x: clamp(x, -maxX, maxX), y: clamp(y, -maxY, maxY) };
+    },
+    [w, h],
+  );
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -114,6 +133,7 @@ export default function RootBrush({
       canvas.height = Math.round(h * cssDpr);
       canvas.style.width = "";
       canvas.style.height = "";
+      canvas.style.transform = "";
       drawDpr = cssDpr;
     }
 
@@ -133,6 +153,12 @@ export default function RootBrush({
       brush,
     );
   }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !isFullscreen) return;
+    canvas.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
+  }, [pan, isFullscreen]);
 
   useEffect(() => {
     draw();
@@ -218,7 +244,12 @@ export default function RootBrush({
     const onChange = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
-      if (!fs) setZoom(1);
+      if (!fs) {
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+        setPanning(false);
+        dragRef.current = null;
+      }
     };
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
@@ -226,16 +257,54 @@ export default function RootBrush({
 
   useEffect(() => {
     if (!isFullscreen) return;
-    const onResize = () => draw();
+    const onResize = () => {
+      setPan((p) => clampPan(p.x, p.y, zoom));
+      draw();
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [isFullscreen, draw]);
+  }, [isFullscreen, draw, clampPan, zoom]);
 
-  const ZOOM_MIN = 0.5;
-  const ZOOM_MAX = 6;
-  const zoomBy = (factor: number) =>
-    setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * factor)));
+  const zoomBy = (factor: number) => {
+    setZoom((z) => {
+      const nz = clamp(z * factor, ZOOM_MIN, ZOOM_MAX);
+      setPan((p) => clampPan(p.x, p.y, nz));
+      return nz;
+    });
+  };
 
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isFullscreen || zoom === 1) return;
+    if (e.button !== 0) return;
+    dragRef.current = { x: e.clientX, y: e.clientY };
+    setPanning(true);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const d = dragRef.current;
+    if (!d || !isFullscreen) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    dragRef.current = { x: e.clientX, y: e.clientY };
+    setPan((p) => clampPan(p.x + dx, p.y + dy, zoom));
+  };
+
+  const onCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setPanning(false);
+    try {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* already released */
+    }
+  };
   useEffect(() => {
     if (recorder.recording) return;
     draw();
@@ -413,7 +482,27 @@ export default function RootBrush({
               : undefined
           }
         >
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas
+            ref={canvasRef}
+            className={`specimen-tree__canvas${isFullscreen && zoom !== 1 ? " is-pannable" : ""}${panning ? " is-panning" : ""}`}
+            onPointerDown={onCanvasPointerDown}
+            onPointerMove={onCanvasPointerMove}
+            onPointerUp={onCanvasPointerUp}
+            onPointerCancel={onCanvasPointerUp}
+          />
+          {isFullscreen && (
+            <button
+              type="button"
+              className="canvas-fs-close"
+              onClick={toggleFullscreen}
+              title="Exit full screen"
+              aria-label="Exit full screen"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          )}
           <button
             type="button"
             className={`canvas-fs-btn${isFullscreen ? " is-active" : ""}`}
@@ -459,9 +548,9 @@ export default function RootBrush({
               <button
                 type="button"
                 className="btn"
-                onClick={() => setZoom(1)}
-                disabled={zoom === 1}
-                title="Reset zoom"
+                onClick={resetView}
+                disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+                title="Reset zoom and pan"
               >
                 Reset
               </button>
