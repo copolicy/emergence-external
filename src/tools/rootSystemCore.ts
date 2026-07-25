@@ -141,6 +141,7 @@ export const SLIDER_KEYS_SIMPLE: (keyof RootParams)[] = [
   "seed",
   "density",
   "thickness",
+  "cutout",
 ];
 
 export const SLIDER_KEYS_GROW: (keyof RootParams)[] = [

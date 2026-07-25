@@ -186,9 +186,13 @@ export default function RootBrush({
       growth,
       true,
       brush,
-      stampOpts && { ...stampOpts, quality: qualityRef.current },
+      // While a slider is scrubbing, show untreated draft linework instead of
+      // a lower-resolution treatment: the treatment's breaks are resolution-
+      // sensitive, so an approximated preview MISLEADS — it shows more breaks
+      // than the real result. At rest the preview is exactly the export.
+      qualityRef.current < 1 ? undefined : stampOpts,
     );
-    // settleTick re-runs the draw at full quality after scrubbing stops.
+    // settleTick re-runs the draw with the full treatment after scrubbing.
   }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts, settleTick]);
 
   useEffect(() => {
