@@ -3,6 +3,12 @@ import { createNoise2D } from "simplex-noise";
 import { mulberry32 } from "./specimenTreeCore";
 import { sampleLuminance, toneAt, type LumBuffer } from "./flowFieldCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 
 // Generative canvas size — matches the other tools.
 export const CW = 680;
@@ -23,6 +29,9 @@ export interface ContourParams {
   warp: number; // domain-warp amount — how much the lines meander
   levels: number; // number of contour lines
   lineWidth: number; // stroke width
+  // ink treatment — the same stamp/cutout render pass the Root Brush runs
+  stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
+  cutout: number; // 0..1 cutout break/simplify pass (0 = off)
   // image
   imageInfluence: number; // 0..1 how strongly the image shapes the field
   contrast: number; // tone curve exponent for the image
@@ -35,6 +44,9 @@ export const DEFAULT_CONTOUR: ContourParams = {
   warp: 0.95,
   levels: 11,
   lineWidth: 1,
+  // Same treatment defaults as the Root Brush / vertical-card references.
+  stamp: 0.34,
+  cutout: 0.34,
   imageInfluence: 0.8,
   contrast: 1.1,
 };
@@ -46,6 +58,8 @@ export const CONTOUR_RANGES: Record<keyof ContourParams, [number, number, number
   warp: [0, 2.5, 0.05],
   levels: [3, 20, 1],
   lineWidth: [0.3, 2, 0.1],
+  stamp: [0, 0.45, 0.01],
+  cutout: [0, 1, 0.01],
   imageInfluence: [0, 1, 0.02],
   contrast: [0.3, 3, 0.05],
 };
@@ -57,6 +71,8 @@ export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
   warp: "Meander",
   levels: "Density",
   lineWidth: "Line Weight",
+  stamp: "Stamp",
+  cutout: "Line Breaks",
   imageInfluence: "Image Shape",
   contrast: "Contrast",
 };
@@ -68,6 +84,10 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   warp: "How much the field is distorted — turns smooth blobs into meandering, river-like contours.",
   levels: "How many contour lines are drawn between the lowest and highest ground.",
   lineWidth: "Thickness of the contour strokes.",
+  stamp:
+    "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
+  cutout:
+    "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
   imageInfluence: "How strongly the image's tone shapes the terrain. Zero is pure noise; one bands the picture.",
   contrast: "Tone curve for the image. Above 1 deepens the shadows into denser contours.",
 };
@@ -78,6 +98,7 @@ export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
   "seed",
   "levels",
   "lineWidth",
+  "cutout",
 ];
 
 export const SLIDER_KEYS_FIELD: (keyof ContourParams)[] = [
@@ -216,6 +237,7 @@ export function drawContours(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -224,6 +246,26 @@ export function drawContours(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintContourLines(tctx, w, h, result, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintContourLines(ctx, w, h, result, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke every contour ring onto `ctx` (transform must already be set). */
+function paintContourLines(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  result: ContourResult,
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -265,13 +307,27 @@ export function buildContourSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="round" stroke-linejoin="round">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintContourLines(tctx, w, h, result, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="round" stroke-linejoin="round">`,
+  );
   let lineId = 0;
   for (const line of result.lines) {
     const id = lineId++;

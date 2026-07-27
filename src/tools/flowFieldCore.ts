@@ -1,5 +1,11 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 
 // Generative canvas size — matches the 2D tree tool so cards feel consistent.
 export const FW = 680;
@@ -37,6 +43,9 @@ export interface FlowParams {
   emergeRoots: number; // number of primary root strokes fanning from the crown
   emergeNest: number; // nested lines filled into each gap between adjacent roots
   emergeFragments: number; // short broken ridge fragments scattered between lines
+  // ink treatment — the same stamp/cutout render pass the Root Brush runs
+  stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
+  cutout: number; // 0..1 cutout break/simplify pass (0 = off)
   // image mode
   imageInfluence: number; // 0..1 how strongly the image steers the field
   threshold: number; // 0..1 skip seeds in areas lighter than this
@@ -63,6 +72,10 @@ export const DEFAULT_FLOW: FlowParams = {
   emergeRoots: 10,
   emergeNest: 2,
   emergeFragments: 24,
+  // Ink treatment values matched against the vertical-card references — the
+  // same render pass (and defaults) as the Root Brush.
+  stamp: 0.34,
+  cutout: 0.34,
   imageInfluence: 0.85,
   threshold: 0.04,
   contrast: 1.1,
@@ -117,6 +130,8 @@ export const FLOW_RANGES: Record<
   emergeRoots: [3, 40, 1],
   emergeNest: [0, 8, 1],
   emergeFragments: [0, 80, 1],
+  stamp: [0, 0.45, 0.01],
+  cutout: [0, 1, 0.01],
   imageInfluence: [0, 1, 0.02],
   threshold: [0, 0.6, 0.01],
   contrast: [0.3, 3, 0.05],
@@ -142,6 +157,8 @@ export const FLOW_LABELS: Record<keyof FlowParams, string> = {
   emergeRoots: "Roots",
   emergeNest: "Nested",
   emergeFragments: "Fragments",
+  stamp: "Stamp",
+  cutout: "Line Breaks",
   imageInfluence: "Image Steer",
   threshold: "Threshold",
   contrast: "Contrast",
@@ -168,6 +185,10 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
   emergeRoots: "Number of primary root strokes fanning out from the crown. These are the bold structural lines the nested fill echoes.",
   emergeNest: "How many nested lines are repeated in each gap between two roots, each echoing the roots' curve. Zero draws roots only.",
   emergeFragments: "Short broken ridge fragments scattered in the gaps between the continuous lines — the fingerprint's disconnected strokes. Zero keeps every line whole.",
+  stamp:
+    "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
+  cutout:
+    "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
   imageInfluence:
     "How strongly the image's edges steer the flow. Zero ignores the image; one follows its contours.",
   threshold: "Brightness cutoff. Raise it to drop lines out of the lightest areas.",
@@ -181,7 +202,9 @@ export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
   "seed",
   "spacing",
   "lineWidth",
+  "cutout",
 ];
+
 
 export const SLIDER_KEYS_FIELD: (keyof FlowParams)[] = [
   "seed",
@@ -810,6 +833,7 @@ export function drawFlow(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -818,6 +842,27 @@ export function drawFlow(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintFlowLines(tctx, w, h, lines, p, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintFlowLines(ctx, w, h, lines, p, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke every flow line onto `ctx` (transform must already be set). */
+function paintFlowLines(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lines: FlowLine[],
+  p: FlowParams,
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -906,13 +951,27 @@ export function buildFlowSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="round" stroke-linejoin="round">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintFlowLines(tctx, w, h, lines, p, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="round" stroke-linejoin="round">`,
+  );
   let lineId = 0;
   for (const line of lines) {
     const id = lineId++;

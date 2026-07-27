@@ -52,6 +52,25 @@ export function stampWeightForStroke(strokePx: number): number {
   return TREATMENT_WEIGHT_REF * Math.max(0.1, strokePx);
 }
 
+/**
+ * The stamp/cutout treatment for a stroke-width tool's params, or undefined
+ * when both sliders are off. Every field tool exposes the treatment through
+ * the same `stamp`/`cutout` params the Root Brush uses.
+ */
+export function stampOptsForStroke(p: {
+  stamp: number;
+  cutout: number;
+  lineWidth: number;
+}): StampOpts | undefined {
+  return p.stamp > 0 || p.cutout > 0
+    ? {
+        amount: p.stamp,
+        cutout: p.cutout,
+        lineWeight: stampWeightForStroke(p.lineWidth),
+      }
+    : undefined;
+}
+
 // Blur radii in preview-space px at each slider's max, and the alpha cut
 // levels. Both sliders map linearly onto their radius, independently:
 //   stamp  — blur + LOW threshold: the blurred skirt reads as solid ink, so

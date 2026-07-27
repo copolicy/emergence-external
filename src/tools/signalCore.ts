@@ -1,5 +1,11 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 
 // Telecom — overlapping concentric signal rings. Broken arcs radiate from a
 // handful of transmitters, like radio waves or ripples colliding on water.
@@ -16,6 +22,9 @@ export interface SignalParams {
   lineWidth: number;
   breakiness: number; // 0..1 how much of each ring is missing
   jitter: number; // 0..1 radial noise on ring radius
+  // ink treatment — the same stamp/cutout render pass the Root Brush runs
+  stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
+  cutout: number; // 0..1 cutout break/simplify pass (0 = off)
 }
 
 export const DEFAULT_SIGNAL: SignalParams = {
@@ -26,6 +35,9 @@ export const DEFAULT_SIGNAL: SignalParams = {
   lineWidth: 1.15,
   breakiness: 0.32,
   jitter: 0.08,
+  // Same treatment defaults as the Root Brush / vertical-card references.
+  stamp: 0.34,
+  cutout: 0.34,
 };
 
 export const SIGNAL_RANGES: Record<
@@ -39,6 +51,8 @@ export const SIGNAL_RANGES: Record<
   lineWidth: [0.3, 2.5, 0.1],
   breakiness: [0, 0.7, 0.02],
   jitter: [0, 0.35, 0.02],
+  stamp: [0, 0.45, 0.01],
+  cutout: [0, 1, 0.01],
 };
 
 export const SIGNAL_LABELS: Record<keyof SignalParams, string> = {
@@ -49,6 +63,8 @@ export const SIGNAL_LABELS: Record<keyof SignalParams, string> = {
   lineWidth: "Line Weight",
   breakiness: "Breaks",
   jitter: "Jitter",
+  stamp: "Stamp",
+  cutout: "Line Breaks",
 };
 
 export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
@@ -59,12 +75,17 @@ export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
   lineWidth: "Thickness of the signal strokes.",
   breakiness: "Fraction of each ring left open — dashed, interrupted arcs.",
   jitter: "Radial noise that softens perfect circles into organic ripples.",
+  stamp:
+    "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
+  cutout:
+    "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
 export const SLIDER_KEYS_SIMPLE_SIGNAL: (keyof SignalParams)[] = [
   "seed",
   "spacing",
   "lineWidth",
+  "cutout",
 ];
 
 export interface SignalLine {
@@ -199,6 +220,7 @@ export function drawSignal(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -207,6 +229,26 @@ export function drawSignal(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintSignalLines(tctx, w, h, lines, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintSignalLines(ctx, w, h, lines, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke every signal arc onto `ctx` (transform must already be set). */
+function paintSignalLines(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lines: SignalLine[],
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = "round";
@@ -265,6 +307,7 @@ export function buildSignalSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade
@@ -272,8 +315,21 @@ export function buildSignalSVG(
     : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintSignalLines(tctx, w, h, lines, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
+  );
   let lineId = 0;
   for (const line of lines) {
     const id = lineId++;

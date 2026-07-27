@@ -1,6 +1,12 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
 import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
+import {
   BG,
   DEFAULT_FLOW,
   FH,
@@ -73,6 +79,7 @@ export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
   "seed",
   "spacing",
   "lineWidth",
+  "cutout",
 ];
 
 export const SLIDER_KEYS_FIELD_JAGGED: (keyof JaggedParams)[] = [
@@ -332,6 +339,7 @@ export function drawJagged(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -340,6 +348,26 @@ export function drawJagged(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintJaggedLines(tctx, w, h, lines, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintJaggedLines(ctx, w, h, lines, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke every ridge facet onto `ctx` (transform must already be set). */
+function paintJaggedLines(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lines: FlowLine[],
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = fade ? "round" : "miter";
@@ -400,13 +428,27 @@ export function buildJaggedSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="${fade ? "round" : "miter"}" stroke-miterlimit="6">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintJaggedLines(tctx, w, h, lines, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="${fade ? "round" : "miter"}" stroke-miterlimit="6">`,
+  );
   let lineId = 0;
   for (const line of lines) {
     const id = lineId++;

@@ -1,5 +1,11 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 
 // FinTech — a rectangular mesh warped by domain noise. Reads like a flexible
 // data grid draped over an invisible surface: denser than a street map, softer
@@ -16,6 +22,9 @@ export interface MeshParams {
   fieldScale: number; // noise feature size — cells across long edge
   lineWidth: number;
   jitter: number; // 0..1 node scatter before warping
+  // ink treatment — the same stamp/cutout render pass the Root Brush runs
+  stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
+  cutout: number; // 0..1 cutout break/simplify pass (0 = off)
 }
 
 export const DEFAULT_MESH: MeshParams = {
@@ -25,6 +34,9 @@ export const DEFAULT_MESH: MeshParams = {
   fieldScale: 3.5,
   lineWidth: 1,
   jitter: 0.12,
+  // Same treatment defaults as the Root Brush / vertical-card references.
+  stamp: 0.34,
+  cutout: 0.34,
 };
 
 export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
@@ -34,6 +46,8 @@ export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
   fieldScale: [1.5, 10, 0.5],
   lineWidth: [0.3, 2.5, 0.1],
   jitter: [0, 0.5, 0.02],
+  stamp: [0, 0.45, 0.01],
+  cutout: [0, 1, 0.01],
 };
 
 export const MESH_LABELS: Record<keyof MeshParams, string> = {
@@ -43,6 +57,8 @@ export const MESH_LABELS: Record<keyof MeshParams, string> = {
   fieldScale: "Field Scale",
   lineWidth: "Line Weight",
   jitter: "Jitter",
+  stamp: "Stamp",
+  cutout: "Line Breaks",
 };
 
 export const MESH_HINTS: Record<keyof MeshParams, string> = {
@@ -52,12 +68,17 @@ export const MESH_HINTS: Record<keyof MeshParams, string> = {
   fieldScale: "Size of the warp waves. Lower values make broad drapes; higher packs tighter ripples.",
   lineWidth: "Thickness of the mesh strokes.",
   jitter: "Scatter applied to nodes before warping — softens the lattice.",
+  stamp:
+    "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
+  cutout:
+    "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
 export const SLIDER_KEYS_SIMPLE_MESH: (keyof MeshParams)[] = [
   "seed",
   "spacing",
   "lineWidth",
+  "cutout",
 ];
 
 export interface MeshLine {
@@ -180,6 +201,7 @@ export function drawMesh(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -188,6 +210,26 @@ export function drawMesh(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintMeshLines(tctx, w, h, lines, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintMeshLines(ctx, w, h, lines, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke every mesh run onto `ctx` (transform must already be set). */
+function paintMeshLines(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lines: MeshLine[],
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = "round";
@@ -246,13 +288,27 @@ export function buildMeshSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintMeshLines(tctx, w, h, lines, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
+  );
   let lineId = 0;
   for (const line of lines) {
     const id = lineId++;

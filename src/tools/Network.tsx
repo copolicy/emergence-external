@@ -5,8 +5,9 @@ import ToolRailControls from "../components/ToolRailControls";
 import { useAnimProgress, useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
 import { setCanvasAspectVars } from "./aspectRatio";
-import { renderPngBlob, scaleStrokeParams } from "./exportCanvas";
+import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
   buildNetworkSVG,
@@ -34,20 +35,34 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(NW, NH);
   const [params, setParams] = useState<NetworkParams>(DEFAULT_NETWORK);
-  const exportParams = useMemo(
-    () => scaleStrokeParams(params, pxScale),
-    [params, pxScale],
-  );
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(true);
+  // Treatment render quality: dropped while sliders scrub, 1 at rest.
+  const qualityRef = useRef(1);
+  const settleTimer = useRef<number | undefined>(undefined);
+  const [settleTick, setSettleTick] = useState(0);
 
-  const result = useMemo(() => computeNetwork(w, h, params), [params, w, h]);
-  const exportResult = useMemo(
-    () => computeNetwork(exportDims.w, exportDims.h, exportParams),
-    [exportDims, exportParams],
+  // Stamp/cutout are render-only treatment passes — scrubbing them must not
+  // rebuild the graph, so they're excluded from the deps.
+  const result = useMemo(
+    () => computeNetwork(w, h, params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      w,
+      h,
+      ...Object.entries(params)
+        .filter(([k]) => k !== "stamp" && k !== "cutout")
+        .map(([, v]) => v),
+    ],
+  );
+
+  // Ink-stamp treatment — a render-level pass shared with the Root Brush.
+  const stampOpts = useMemo(
+    () => stampOptsForStroke(params),
+    [params.stamp, params.cutout, params.lineWidth],
   );
 
   const draw = useCallback(() => {
@@ -71,8 +86,13 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
       growth,
       fade,
       params.seed,
+      // While a slider is scrubbing, show untreated draft linework: the
+      // treatment's breaks are resolution-sensitive, so an approximated
+      // preview MISLEADS. At rest the preview is exactly the export.
+      qualityRef.current < 1 ? undefined : stampOpts,
     );
-  }, [result, params, ink, background, growth, w, h, fade]);
+    // settleTick re-runs the draw with the full treatment after scrubbing.
+  }, [result, params, ink, background, growth, w, h, fade, stampOpts, settleTick]);
 
   useEffect(() => {
     draw();
@@ -107,31 +127,36 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
     () => ({
       width: exportDims.w,
       height: exportDims.h,
+      // Magnify the preview result: scale = dpr × (export/preview ratio).
       render: (ctx: CanvasRenderingContext2D, dpr: number) => {
         drawNetwork(
           ctx,
-          dpr,
-          exportDims.w,
-          exportDims.h,
-          exportResult,
-          exportParams,
+          dpr * pxScale,
+          w,
+          h,
+          result,
+          params,
           safeColor(ink, INK),
           safeColor(background, BG),
           growthRef.current,
           fade,
           params.seed,
+          stampOpts,
         );
       },
     }),
     [
       exportDims,
-      exportResult,
-      exportParams,
+      pxScale,
+      w,
+      h,
+      result,
+      params,
       ink,
       background,
-      growth,
+      growthRef,
       fade,
-      params.seed,
+      stampOpts,
     ],
   );
 
@@ -158,10 +183,20 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
 
   const updateParam = useCallback(
     <K extends keyof NetworkParams>(key: K, value: NetworkParams[K]) => {
+      // Scrub with untreated draft linework so slider drags stay fluid;
+      // settle back to the full treatment shortly after the last movement.
+      qualityRef.current = 0.5;
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => {
+        qualityRef.current = 1;
+        setSettleTick((t) => t + 1);
+      }, 160);
       setParams((prev) => ({ ...prev, [key]: value }));
     },
     [],
   );
+
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
 
   const reset = () => {
     setGrowing(false);
@@ -186,36 +221,44 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
 
   const downloadSVG = () => {
     if (!result.lines.length) return;
+    // Vector — build from the preview result at preview dims so stroke weights
+    // read exactly as on screen; SVG scales to any size losslessly.
     const svg = buildNetworkSVG(
-      exportDims.w,
-      exportDims.h,
-      exportResult,
-      exportParams,
+      w,
+      h,
+      result,
+      params,
       safeColor(ink, INK),
       "transparent",
       fade,
       params.seed,
+      stampOpts,
     );
     download(new Blob([svg], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
     if (!result.lines.length) return;
-    void renderPngBlob(exportDims.w, exportDims.h, (ctx, dpr) => {
+    // Pure magnification of the preview — WYSIWYG, no re-trace divergence.
+    // With the stamp treatment the ink comes from a fixed-resolution bitmap,
+    // so supersampling only adds a resample generation — render 1:1 instead.
+    const ss = stampOpts ? 1 : undefined;
+    void renderMagnifiedPngBlob(exportDims.w, exportDims.h, w, h, (ctx, scale) => {
       drawNetwork(
         ctx,
-        dpr,
-        exportDims.w,
-        exportDims.h,
-        exportResult,
-        exportParams,
+        scale,
+        w,
+        h,
+        result,
+        params,
         safeColor(ink, INK),
         transparent ? "transparent" : safeColor(background, BG),
         1,
         fade,
         params.seed,
+        stampOpts,
       );
-    }).then((blob) => blob && download(blob, "png"));
+    }, ss).then((blob) => blob && download(blob, "png"));
   };
 
   const renderRow = (key: keyof NetworkParams) => {

@@ -1,5 +1,11 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 
 // Education — a knowledge graph / constellation. Nodes scatter across the
 // field and connect into triangles and polygons, like a low-poly mesh or
@@ -16,6 +22,9 @@ export interface NetworkParams {
   lineWidth: number;
   nodeSize: number; // filled dot radius (0 = lines only)
   cluster: number; // 0..1 pull toward a soft center cluster
+  // ink treatment — the same stamp/cutout render pass the Root Brush runs
+  stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
+  cutout: number; // 0..1 cutout break/simplify pass (0 = off)
 }
 
 export const DEFAULT_NETWORK: NetworkParams = {
@@ -25,6 +34,9 @@ export const DEFAULT_NETWORK: NetworkParams = {
   lineWidth: 1,
   nodeSize: 2.2,
   cluster: 0.35,
+  // Same treatment defaults as the Root Brush / vertical-card references.
+  stamp: 0.34,
+  cutout: 0.34,
 };
 
 export const NETWORK_RANGES: Record<
@@ -37,6 +49,8 @@ export const NETWORK_RANGES: Record<
   lineWidth: [0.3, 2.5, 0.1],
   nodeSize: [0, 5, 0.1],
   cluster: [0, 1, 0.02],
+  stamp: [0, 0.45, 0.01],
+  cutout: [0, 1, 0.01],
 };
 
 export const NETWORK_LABELS: Record<keyof NetworkParams, string> = {
@@ -46,6 +60,8 @@ export const NETWORK_LABELS: Record<keyof NetworkParams, string> = {
   lineWidth: "Line Weight",
   nodeSize: "Nodes",
   cluster: "Cluster",
+  stamp: "Stamp",
+  cutout: "Line Breaks",
 };
 
 export const NETWORK_HINTS: Record<keyof NetworkParams, string> = {
@@ -55,12 +71,17 @@ export const NETWORK_HINTS: Record<keyof NetworkParams, string> = {
   lineWidth: "Thickness of the connecting strokes.",
   nodeSize: "Radius of the filled dots at each vertex. Zero hides nodes.",
   cluster: "Pull toward the center — higher values tighten the constellation.",
+  stamp:
+    "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
+  cutout:
+    "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
 export const SLIDER_KEYS_SIMPLE_NETWORK: (keyof NetworkParams)[] = [
   "seed",
   "nodes",
   "lineWidth",
+  "cutout",
 ];
 
 export interface NetworkLine {
@@ -209,6 +230,7 @@ export function drawNetwork(
   progress = 1,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -217,6 +239,27 @@ export function drawNetwork(
     ctx.fillRect(0, 0, w, h);
   }
 
+  if (stampActive(stamp)) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintNetwork(tctx, w, h, result, p, ink, progress, fade, fadeSeed),
+    );
+    return;
+  }
+  paintNetwork(ctx, w, h, result, p, ink, progress, fade, fadeSeed);
+}
+
+/** Stroke edges + fill nodes onto `ctx` (transform must already be set). */
+function paintNetwork(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  result: NetworkResult,
+  p: NetworkParams,
+  ink: string,
+  progress: number,
+  fade: boolean,
+  fadeSeed: number,
+) {
   ctx.strokeStyle = ink;
   ctx.fillStyle = ink;
   ctx.lineCap = fade ? "round" : "butt";
@@ -284,13 +327,27 @@ export function buildNetworkSVG(
   background: string,
   fade = false,
   fadeSeed = 1,
+  stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
-    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
   ];
+
+  // Ink-stamp treatment: traced into real vector paths (see stampTreatment)
+  // so the export survives design tools that ignore SVG filters.
+  if (stampActive(stamp)) {
+    const d = traceStampPathD(w, h, ink, stamp, (tctx) =>
+      paintNetwork(tctx, w, h, result, p, ink, 1, fade, fadeSeed),
+    );
+    parts.push(`<path d="${d}" fill="${ink}" fill-rule="evenodd"/>`);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}</svg>`;
+  }
+
+  parts.push(
+    `<g fill="none" stroke="${ink}" stroke-linecap="${fade ? "round" : "butt"}" stroke-linejoin="round">`,
+  );
   let lineId = 0;
   for (const line of result.lines) {
     const id = lineId++;
