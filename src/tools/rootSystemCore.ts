@@ -1,5 +1,15 @@
 import { mulberry32 } from "./specimenTreeCore";
 import { sampleLuminance, toneAt, type LumBuffer } from "./flowFieldCore";
+import {
+  drawStamped,
+  stampActive,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
+
+// The ink-stamp/cutout treatment lives in stampTreatment.ts, shared with the
+// field tools so the whole family carries the same treated ink.
+export type { StampOpts } from "./stampTreatment";
 
 // Generative canvas size — portrait, to read as depth/foundation rather than
 // the landscape circulation of Vascular.
