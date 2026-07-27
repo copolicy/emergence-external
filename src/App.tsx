@@ -6,6 +6,9 @@ import FlowField from './tools/FlowField';
 import Jagged from './tools/Jagged';
 import Contour from './tools/Contour';
 import RoadColors from './tools/RoadColors';
+import Mesh from './tools/Mesh';
+import Signal from './tools/Signal';
+import Network from './tools/Network';
 import RootsText from './tools/RootsText';
 
 // Host for active-tool controls — they portal into the mode-rail panel under the
@@ -23,17 +26,41 @@ const TOOLS: ToolDef[] = [
   { id: 'jagged', label: 'Jagged Fingerprint', Component: Jagged },
   { id: 'contour', label: 'Contour', Component: Contour },
   { id: 'road-colors', label: 'Map', Component: RoadColors },
+  { id: 'mesh', label: 'Mesh', Component: Mesh },
+  { id: 'signal', label: 'Signal', Component: Signal },
+  { id: 'network', label: 'Network', Component: Network },
   { id: 'roots-text', label: 'Roots + Text', Component: RootsText },
 ];
 
 type Family = 'branch' | 'field';
 type Brush = 'organic' | 'engineered';
-type Style = 'abstract' | 'topographic';
+/** Abstract/Topo map to brush-specific tools; Mesh/Signal/Network are shared vertical fields. */
+type Style = 'abstract' | 'topographic' | 'mesh' | 'signal' | 'network';
 
-/** Field tools by brush × style. */
+const STYLE_LABEL: Record<Style, string> = {
+  abstract: 'Abstract',
+  topographic: 'Topo',
+  mesh: 'Mesh',
+  signal: 'Signal',
+  network: 'Network',
+};
+
+/** Field tools by brush × style. Mesh / Signal / Network are vertical-specific. */
 const FIELD_TOOL: Record<Brush, Record<Style, string>> = {
-  organic: { abstract: 'flow-field', topographic: 'contour' },
-  engineered: { abstract: 'jagged', topographic: 'road-colors' },
+  organic: {
+    abstract: 'flow-field',
+    topographic: 'contour',
+    mesh: 'mesh',
+    signal: 'signal',
+    network: 'network',
+  },
+  engineered: {
+    abstract: 'jagged',
+    topographic: 'road-colors',
+    mesh: 'mesh',
+    signal: 'signal',
+    network: 'network',
+  },
 };
 
 export default function App() {
@@ -111,8 +138,17 @@ export default function App() {
 
               {family === 'field' && (
                 <div className="mode-rail__group">
-                  <div className="seg seg--alt" role="group" aria-label="Style">
-                    {(['abstract', 'topographic'] as Style[]).map((s) => (
+                  <span className="mode-rail__label">Field</span>
+                  <div className="seg seg--alt seg--wrap" role="group" aria-label="Field style">
+                    {(
+                      [
+                        'abstract',
+                        'topographic',
+                        'mesh',
+                        'signal',
+                        'network',
+                      ] as Style[]
+                    ).map((s) => (
                       <button
                         key={s}
                         type="button"
@@ -120,7 +156,7 @@ export default function App() {
                         aria-pressed={s === style}
                         onClick={() => setStyle(s)}
                       >
-                        {s === 'abstract' ? 'Abstract' : 'Topographic'}
+                        {STYLE_LABEL[s]}
                       </button>
                     ))}
                   </div>

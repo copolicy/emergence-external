@@ -9,14 +9,14 @@ A small system for compounding simple inputs into something that grows.
 Parent Brand : Organic Branching
 
 8 Verticals :
-- Healthcare
-- Infrastructure
-- Supply chain
-- Automotive
-- FinTech
+- Healthcare — Fingerprint (Organic × Abstract)
+- Infrastructure — Jagged Fingerprint (Engineered × Abstract)
+- Supply chain — Contour (Organic × Topo)
+- Automotive — Map (Engineered × Topo)
+- FinTech — Mesh (Field × Mesh)
 - Financial Services
-- Telecom
-- Education
+- Telecom — Signal (Field × Signal)
+- Education — Network (Field × Network)
 
 ## Develop locally
 

@@ -39,6 +39,7 @@ const EXPORT_STROKE_KEYS = new Set([
   "branchLength",
   "arrowSize",
   "parallel",
+  "nodeSize",
 ]);
 
 /** Scale pixel-based stroke / spacing params so linework weight matches the preview. */

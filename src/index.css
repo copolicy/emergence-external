@@ -387,6 +387,18 @@ button {
   background: var(--hero);
 }
 
+/* Multi-option field styles (Abstract / Topo / Mesh / Signal / Network). */
+.seg--wrap {
+  flex-wrap: wrap;
+  border-radius: 14px;
+}
+
+.seg--wrap .seg__opt {
+  flex: 1 1 calc(33.33% - 4px);
+  min-width: 4.5rem;
+  padding: 6px 8px;
+}
+
 /* On/off switch (Topographic). */
 .switch-row {
   display: flex;

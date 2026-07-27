@@ -43,13 +43,15 @@ const wayKey = (w: RoadWay) =>
 const ROAD_BASE = 1000;
 const DEFAULT_ZOOM = 2.2;
 const DEFAULT_VIEW: View = { zoom: DEFAULT_ZOOM, panX: 0, panY: 0 };
-const BG = "#EBFADC";
+// Automotive vertical defaults — gold street grid on cream, matching the
+// Vertical 04 reference card.
+const BG = "#F5F5F2";
 
 // Pre-fetched SF / Bay Area roads, loaded by default so no Overpass call is
 // needed for the usual view. Generated into public/ as a static asset.
 const SNAPSHOT_URL = snapshotUrl;
 
-// Black linework, collapsed into three clean weight tiers (major / collector /
+// Linework collapsed into three clean weight tiers (major / collector /
 // minor) so the network reads as an organised hierarchy rather than a finely
 // graded heat-map of widths.
 const WEIGHT: Record<Designation, number> = {
@@ -65,7 +67,7 @@ const WEIGHT: Record<Designation, number> = {
   Other: 0.55,
 };
 
-const INK = "#00280F";
+const INK = "#C0B663";
 
 // Designations dropped when "hide highways" is on, plus OSM arterials (see core).
 const HIGHWAY_TIER: Designation[] = ["I-", "US Hwy", "State Hwy", "Hwy"];
