@@ -39,7 +39,9 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
-  const [fade, setFade] = useState(true);
+  // Traces read as etched copper — crisp butt ends, no dissolve. The toggle is
+  // still there, it just starts off.
+  const [fade, setFade] = useState(false);
   // Treatment render quality: dropped while sliders scrub, 1 at rest.
   const qualityRef = useRef(1);
   const settleTimer = useRef<number | undefined>(undefined);
@@ -188,7 +190,7 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
     setParams(DEFAULT_JAGGED);
     setInk(INK);
     setBackground(BG);
-    setFade(true);
+    setFade(false);
     resetSize();
   };
 
@@ -285,8 +287,8 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
 
       onInkChange={setInk}
       onBackgroundChange={setBackground}
-      strokeTip="Color of the flow lines."
-      backgroundTip="Canvas background color behind the lines."
+      strokeTip="Color of the traces."
+      backgroundTip="Board color behind the traces."
       onPNG={downloadPNG}
       onSVG={downloadSVG}
       exportDisabled={!lines.length}
@@ -309,7 +311,7 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
 
       <section
         className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
-        aria-label="Jagged fingerprint canvas"
+        aria-label="Circuit trace canvas"
       >
         {!controlsTarget && (
           <aside className="specimen-tree__controls">{controls}</aside>

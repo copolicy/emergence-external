@@ -370,7 +370,7 @@ button {
   background: var(--c-mid-green);
 }
 
-/* Nested brush / style toggles — gold instead of dark green. */
+/* Nested vertical / field toggles — gold instead of dark green. */
 .seg--alt .seg__opt {
   font-weight: 400;
   text-transform: none;
@@ -387,16 +387,9 @@ button {
   background: var(--hero);
 }
 
-/* Multi-option field styles (Abstract / Topo / Mesh / Signal / Network). */
-.seg--wrap {
-  flex-wrap: wrap;
-  border-radius: 14px;
-}
-
-.seg--wrap .seg__opt {
-  flex: 1 1 calc(33.33% - 4px);
-  min-width: 4.5rem;
-  padding: 6px 8px;
+.seg--alt.seg--vertical .seg__opt {
+  font-size: 0.78rem;
+  padding: 8px 12px;
 }
 
 /* On/off switch (Topographic). */

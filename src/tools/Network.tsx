@@ -39,7 +39,9 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
-  const [fade, setFade] = useState(true);
+  // Off by default — the tip-taper fade reads as dashed/broken on short
+  // triangulation edges; the reference mesh is solid, unbroken linework.
+  const [fade, setFade] = useState(false);
   // Treatment render quality: dropped while sliders scrub, 1 at rest.
   const qualityRef = useRef(1);
   const settleTimer = useRef<number | undefined>(undefined);
@@ -204,7 +206,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
     setParams(DEFAULT_NETWORK);
     setInk(INK);
     setBackground(BG);
-    setFade(true);
+    setFade(false);
     resetSize();
   };
 

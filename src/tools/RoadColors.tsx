@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import snapshotUrl from "../data/sf-bay-roads.json?url";
 import AspectRatioControl from "../components/AspectRatioControl";
@@ -9,9 +9,16 @@ import RecordButton from "../components/RecordButton";
 import { useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
 import { setCanvasAspectVars } from "./aspectRatio";
-import { renderPngBlob } from "./exportCanvas";
+import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import {
+  drawStamped,
+  stampActive,
+  stampOptsForStroke,
+  traceStampPathD,
+  type StampOpts,
+} from "./stampTreatment";
 import {
   REVEAL_ORDER,
   fetchRoads,
@@ -69,6 +76,11 @@ const WEIGHT: Record<Designation, number> = {
 
 const INK = "#C0B663";
 
+const STAMP_TIP =
+  "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.";
+const CUTOUT_TIP =
+  "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.";
+
 // Designations dropped when "hide highways" is on, plus OSM arterials (see core).
 const HIGHWAY_TIER: Designation[] = ["I-", "US Hwy", "State Hwy", "Hwy"];
 
@@ -101,7 +113,7 @@ export default function RoadColors({
   const roadsDrawnRef = useRef(0);
   const [animating, setAnimating] = useState(false);
 
-  const { w, h, exportDims, config, setConfig } = useCanvasDimensions(
+  const { w, h, exportDims, pxScale, config, setConfig } = useCanvasDimensions(
     ROAD_BASE,
     ROAD_BASE,
   );
@@ -110,6 +122,15 @@ export default function RoadColors({
   const [bg, setBg] = useState(BG);
   const [ink, setInk] = useState(INK);
   const [fade, setFade] = useState(true);
+  // Ink treatment — the same stamp/cutout render pass the rest of the tool
+  // family runs. Off by default so the vertical's street grid reads as clean
+  // linework until the sliders are dialled up.
+  const [stamp, setStamp] = useState(0);
+  const [cutout, setCutout] = useState(0);
+  // Treatment render quality: dropped while sliders scrub, 1 at rest.
+  const qualityRef = useRef(1);
+  const settleTimer = useRef<number | undefined>(undefined);
+  const [settleTick, setSettleTick] = useState(0);
 
   // Location the roads are fetched around. Default matches the bundled snapshot
   // loaded on first open; typing a new place fetches it live from Overpass.
@@ -125,6 +146,28 @@ export default function RoadColors({
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   const colorFor = useCallback(() => safeColor(ink, INK), [ink]);
+
+  const stampOpts = useMemo(
+    () => stampOptsForStroke({ stamp, cutout, lineWidth: weight }),
+    [stamp, cutout, weight],
+  );
+
+  // Scrub with untreated draft linework so slider drags stay fluid; settle
+  // back to the full treatment shortly after the last movement.
+  const scrubbed = useCallback(
+    (set: (v: number) => void) => (v: number) => {
+      qualityRef.current = 0.5;
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => {
+        qualityRef.current = 1;
+        setSettleTick((t) => t + 1);
+      }, 160);
+      set(v);
+    },
+    [],
+  );
+
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
 
   const strokeFor = useCallback(
     (d: Designation, scale = 1) => weight * WEIGHT[d] * scale,
@@ -182,40 +225,78 @@ export default function RoadColors({
     [],
   );
 
-  // Draw the whole network into a frame of renderW × renderH px. Used for the
-  // export/record path (the live preview uses animate / renderStatic below).
-  const drawRoadsFrame = useCallback(
+  // Stroke the first `count` roads in PREVIEW coordinates onto `tctx`, whose
+  // transform the caller has already set. Shared by the direct draw and the
+  // stamp treatment's offscreen buffer.
+  const paintRoads = useCallback(
     (
-      ctx: CanvasRenderingContext2D,
-      dpr: number,
+      tctx: CanvasRenderingContext2D,
       d: RoadData,
-      roadCount: number,
-      transparent: boolean,
-      renderW: number,
-      renderH: number,
+      ordered: RoadWay[],
+      count: number,
     ) => {
-      const strokeScale = renderW / w;
-      const background = transparent ? "transparent" : safeColor(bg, BG);
-      prepare(ctx, dpr, background, renderW, renderH);
-      const proj = makeProjector(d.center, d.radius, renderW, renderH, view);
-      const ordered = orderWays(d, keepWay);
-      const n = Math.min(roadCount, ordered.length);
-      const fieldFade = fade ? makeFade(renderW, renderH, { seed: 7 }) : null;
-      const fadeFor = (way: RoadWay) =>
-        fieldFade
-          ? {
-              keep: (x: number, y: number) => fieldFade.keep(wayKey(way), x, y),
-              alpha: (x: number, y: number) => fieldFade.alpha(wayKey(way), x, y),
-              width: (x: number, y: number) => fieldFade.width(wayKey(way), x, y),
-            }
-          : null;
-      for (let ri = 0; ri < n; ri++)
-        drawWay(ctx, proj, ordered[ri], strokeScale, fadeFor(ordered[ri]));
+      tctx.lineCap = "round";
+      tctx.lineJoin = "round";
+      const proj = makeProjector(d.center, d.radius, w, h, view);
+      const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
+      const n = Math.min(count, ordered.length);
+      for (let ri = 0; ri < n; ri++) {
+        const way = ordered[ri];
+        drawWay(
+          tctx,
+          proj,
+          way,
+          1,
+          fieldFade
+            ? {
+                keep: (x: number, y: number) => fieldFade.keep(wayKey(way), x, y),
+                alpha: (x: number, y: number) => fieldFade.alpha(wayKey(way), x, y),
+                width: (x: number, y: number) => fieldFade.width(wayKey(way), x, y),
+              }
+            : null,
+        );
+      }
     },
-    [w, bg, prepare, drawWay, view, keepWay, fade],
+    [w, h, view, fade, drawWay],
   );
 
-  // Animate the network filling in. Cancels any prior run.
+  // Paint one complete frame. Geometry is always laid out at PREVIEW
+  // dimensions and scaled by `scale` (dpr on the live canvas, dpr × the export
+  // ratio for PNG and video), so the stamp treatment — which runs at a fixed
+  // reference resolution — and the fade field produce the same ink at every
+  // output size.
+  const renderFrame = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      scale: number,
+      d: RoadData,
+      count: number,
+      background: string,
+      treatment: StampOpts | undefined,
+    ) => {
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      if (background !== "transparent") {
+        ctx.fillStyle = background;
+        ctx.fillRect(0, 0, w, h);
+      }
+      const ordered = orderWays(d, keepWay);
+      if (stampActive(treatment)) {
+        drawStamped(ctx, scale, w, h, colorFor(), treatment, (tctx) =>
+          paintRoads(tctx, d, ordered, count),
+        );
+        return;
+      }
+      paintRoads(ctx, d, ordered, count);
+    },
+    [w, h, keepWay, colorFor, paintRoads],
+  );
+
+  // Animate the network filling in. Cancels any prior run. Each frame appends
+  // to the canvas rather than repainting, so the fill-in stays cheap across
+  // tens of thousands of ways — which also means it can't run the stamp
+  // treatment (a whole-frame pass). The treated result is painted once at the
+  // end, when `animating` flips false.
   const animate = useCallback(
     (d: RoadData) => {
       const canvas = canvasRef.current;
@@ -273,7 +354,10 @@ export default function RoadColors({
   );
 
   // Instant, un-animated redraw — used for color / weight / background / size
-  // tweaks so dragging a picker doesn't replay the whole fill-in.
+  // tweaks so dragging a picker doesn't replay the whole fill-in. This is also
+  // where the treated ink lands: the fill-in itself draws raw linework (see
+  // `animate`) and the effect below re-renders through the treatment once the
+  // animation settles.
   const renderStatic = useCallback(
     (d: RoadData) => {
       const canvas = canvasRef.current;
@@ -287,21 +371,21 @@ export default function RoadColors({
       setCanvasAspectVars(canvas, w, h);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      prepare(ctx, dpr, safeColor(bg, BG), w, h);
-      const proj = makeProjector(d.center, d.radius, w, h, view);
-      const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
-      const fadeFor = (way: RoadWay) =>
-        fieldFade
-          ? {
-              keep: (x: number, y: number) => fieldFade.keep(wayKey(way), x, y),
-              alpha: (x: number, y: number) => fieldFade.alpha(wayKey(way), x, y),
-              width: (x: number, y: number) => fieldFade.width(wayKey(way), x, y),
-            }
-          : null;
-      for (const way of orderWays(d, keepWay)) drawWay(ctx, proj, way, 1, fadeFor(way));
-      roadsDrawnRef.current = orderWays(d, keepWay).length;
+      const total = orderWays(d, keepWay).length;
+      renderFrame(
+        ctx,
+        dpr,
+        d,
+        total,
+        safeColor(bg, BG),
+        // While a slider is scrubbing, show untreated draft linework: the
+        // treatment's breaks are resolution-sensitive, so an approximated
+        // preview MISLEADS. At rest the preview is exactly the export.
+        qualityRef.current < 1 ? undefined : stampOpts,
+      );
+      roadsDrawnRef.current = total;
     },
-    [w, h, bg, prepare, drawWay, view, keepWay, fade],
+    [w, h, bg, keepWay, renderFrame, stampOpts],
   );
 
   useEffect(() => {
@@ -327,8 +411,9 @@ export default function RoadColors({
     if (animating) return;
     const d = dataRef.current;
     if (d) renderStatic(d);
+    // settleTick re-runs the draw with the full treatment after scrubbing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, bg, view, ink, fade, w, h, animating]);
+  }, [weight, bg, view, ink, fade, w, h, animating, stamp, cutout, settleTick]);
 
   // Load the saved Bay Area snapshot (no network round-trip to Overpass).
   const loadSaved = useCallback(async () => {
@@ -397,11 +482,19 @@ export default function RoadColors({
     return {
       width: exportDims.w,
       height: exportDims.h,
+      // Magnify the preview result: scale = dpr × (export/preview ratio).
       render: (ctx: CanvasRenderingContext2D, dpr: number) => {
-        drawRoadsFrame(ctx, dpr, d, roadsDrawnRef.current, false, exportDims.w, exportDims.h);
+        renderFrame(
+          ctx,
+          dpr * pxScale,
+          d,
+          roadsDrawnRef.current,
+          safeColor(bg, BG),
+          stampOpts,
+        );
       },
     };
-  }, [drawRoadsFrame, exportDims]);
+  }, [renderFrame, exportDims, pxScale, bg, stampOpts]);
 
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
@@ -504,28 +597,56 @@ export default function RoadColors({
 
   const downloadPNG = (transparent: boolean) => {
     if (!data) return;
-    void renderPngBlob(exportDims.w, exportDims.h, (ctx, dpr) => {
-      drawRoadsFrame(
-        ctx,
-        dpr,
-        data,
-        orderWays(data, keepWay).length,
-        transparent,
-        exportDims.w,
-        exportDims.h,
-      );
-    }).then((b) => b && download(b, "png"));
+    const total = orderWays(data, keepWay).length;
+    // Pure magnification of the preview — WYSIWYG, no re-projection divergence.
+    // With the stamp treatment the ink comes from a fixed-resolution bitmap,
+    // so supersampling only adds a resample generation — render 1:1 instead.
+    const ss = stampActive(stampOpts) ? 1 : undefined;
+    void renderMagnifiedPngBlob(
+      exportDims.w,
+      exportDims.h,
+      w,
+      h,
+      (ctx, scale) =>
+        renderFrame(
+          ctx,
+          scale,
+          data,
+          total,
+          transparent ? "transparent" : safeColor(bg, BG),
+          stampOpts,
+        ),
+      ss,
+    ).then((b) => b && download(b, "png"));
   };
 
+  // Vector — built from the preview projection at preview dims so stroke
+  // weights read exactly as on screen; SVG scales to any size losslessly.
   const downloadSVG = () => {
     if (!data) return;
-    const proj = makeProjector(data.center, data.radius, exportDims.w, exportDims.h, view);
-    const fieldFade = fade ? makeFade(exportDims.w, exportDims.h, { seed: 7 }) : null;
-    const strokeScale = exportDims.w / w;
-    const f = (n: number) => Math.round(n * 10) / 10;
+    const stroke = colorFor();
+    const head = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="${safeColor(bg, BG)}"/>`;
+
+    // Ink treatment: traced into real vector paths (see stampTreatment) so the
+    // export survives design tools that ignore SVG filters.
+    if (stampActive(stampOpts)) {
+      const ordered = orderWays(data, keepWay);
+      const traced = traceStampPathD(w, h, stroke, stampOpts, (tctx) =>
+        paintRoads(tctx, data, ordered, ordered.length),
+      );
+      const treatedSvg = `${head}<path d="${traced}" fill="${stroke}" fill-rule="evenodd"/></svg>`;
+      download(new Blob([treatedSvg], { type: "image/svg+xml" }), "svg");
+      return;
+    }
+
+    const proj = makeProjector(data.center, data.radius, w, h, view);
+    const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
+    const f = (n: number) => Math.round(n * 100) / 100;
     let body = "";
-    for (const d of REVEAL_ORDER) {
-      const group = data.ways.filter((wy) => wy.designation === d && keepWay(wy));
+    for (const designation of REVEAL_ORDER) {
+      const group = data.ways.filter(
+        (wy) => wy.designation === designation && keepWay(wy),
+      );
       if (!group.length) continue;
       const paths = group
         .map((wy) => {
@@ -541,14 +662,13 @@ export default function RoadColors({
                 width: (x: number, y: number) => fieldFade.width(wayKey(wy), x, y),
               }
             : null;
-          return svgFadedPaths(pts, strokeFor(d, strokeScale), fadeOpts, f);
+          return svgFadedPaths(pts, strokeFor(designation), fadeOpts, f);
         })
         .join("");
       if (paths)
-        body += `<g stroke="${colorFor()}" fill="none" stroke-linecap="round" stroke-linejoin="round">${paths}</g>`;
+        body += `<g stroke="${stroke}" fill="none" stroke-linecap="round" stroke-linejoin="round">${paths}</g>`;
     }
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${exportDims.w}" height="${exportDims.h}" viewBox="0 0 ${exportDims.w} ${exportDims.h}"><rect width="${exportDims.w}" height="${exportDims.h}" fill="${safeColor(bg, BG)}"/>${body}</svg>`;
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([`${head}${body}</svg>`], { type: "image/svg+xml" }), "svg");
   };
 
   const slider = (
@@ -559,8 +679,12 @@ export default function RoadColors({
     stepv: number,
     onChange: (v: number) => void,
     suffix = "",
+    tip = "",
   ) => (
-    <label className="tool-param-row">
+    <label
+      className={`tool-param-row${tip ? " has-tip" : ""}`}
+      data-tip={tip || undefined}
+    >
       <span className="tool-param-row__header">
         <span className="tool-param-row__label">{label}</span>
         <ParamValueInput
@@ -664,7 +788,18 @@ export default function RoadColors({
           </span>
         </label>
         <div className="specimen-tree__sliders">
-          {slider("Line Weight", weight, 0.3, 3, 0.1, setWeight)}
+          {slider("Line Weight", weight, 0.3, 3, 0.1, scrubbed(setWeight))}
+          {slider("Stamp", stamp, 0, 0.45, 0.01, scrubbed(setStamp), "", STAMP_TIP)}
+          {slider(
+            "Line Breaks",
+            cutout,
+            0,
+            1,
+            0.01,
+            scrubbed(setCutout),
+            "",
+            CUTOUT_TIP,
+          )}
         </div>
         <PaletteColorRow label="Stroke Color" value={ink} onChange={setInk} />
       </div>

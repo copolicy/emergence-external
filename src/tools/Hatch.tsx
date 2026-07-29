@@ -10,40 +10,31 @@ import { safeColor } from "./specimenTreeCore";
 import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
-  buildContourSVG,
-  CONTOUR_HINTS,
-  CONTOUR_LABELS,
-  CONTOUR_RANGES,
-  computeContours,
-  CW,
-  CH,
-  DEFAULT_CONTOUR,
-  drawContours,
+  buildHatchSVG,
+  computeHatch,
+  DEFAULT_HATCH,
+  drawHatch,
+  HATCH_HINTS,
+  HATCH_LABELS,
+  HATCH_RANGES,
+  HH,
+  HW,
   INK,
-  SLIDER_KEYS_SIMPLE,
-  type ContourParams,
-} from "./contourCore";
+  SLIDER_KEYS_SIMPLE_HATCH,
+  type HatchParams,
+} from "./hatchCore";
 
-// TEMP: extra tuning sliders for dialing in the field shape — pull these back
-// out once the look is locked in (see SLIDER_KEYS_SIMPLE for the normal set).
-const SLIDER_KEYS_TUNING: (keyof ContourParams)[] = [
-  "fieldScale",
-  "octaves",
-  "warp",
-  "fill",
-  "stamp",
-];
+const GROWTH_MS = 3200;
 
-const GROWTH_MS = 3600;
-
-interface ContourProps {
-  /** Portal tool controls into this host (mode-rail panel under the field tool seg). */
+interface HatchProps {
   controlsTarget?: HTMLElement | null;
 }
 
-export default function Contour({ controlsTarget = null }: ContourProps = {}) {
+export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [params, setParams] = useState<ContourParams>(DEFAULT_CONTOUR);
+  const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
+    useCanvasDimensions(HW, HH);
+  const [params, setParams] = useState<HatchParams>(DEFAULT_HATCH);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
@@ -54,12 +45,10 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   const settleTimer = useRef<number | undefined>(undefined);
   const [settleTick, setSettleTick] = useState(0);
 
-  const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(CW, CH);
-
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
-  // re-trace the contours, so they're excluded from the deps.
-  const result = useMemo(
-    () => computeContours(w, h, params, null),
+  // re-scatter the field, so they're excluded from the deps.
+  const lines = useMemo(
+    () => computeHatch(w, h, params),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       w,
@@ -85,12 +74,12 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
     setCanvasAspectVars(canvas, w, h);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    drawContours(
+    drawHatch(
       ctx,
       dpr,
       w,
       h,
-      result,
+      lines,
       safeColor(ink, INK),
       safeColor(background, BG),
       growth,
@@ -102,7 +91,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       qualityRef.current < 1 ? undefined : stampOpts,
     );
     // settleTick re-runs the draw with the full treatment after scrubbing.
-  }, [result, ink, background, w, h, growth, fade, params.seed, stampOpts, settleTick]);
+  }, [lines, ink, background, growth, w, h, fade, params.seed, stampOpts, settleTick]);
 
   useEffect(() => {
     draw();
@@ -139,12 +128,12 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       height: exportDims.h,
       // Magnify the preview result: scale = dpr × (export/preview ratio).
       render: (ctx: CanvasRenderingContext2D, dpr: number) => {
-        drawContours(
+        drawHatch(
           ctx,
           dpr * pxScale,
           w,
           h,
-          result,
+          lines,
           safeColor(ink, INK),
           safeColor(background, BG),
           growthRef.current,
@@ -154,12 +143,12 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
         );
       },
     }),
-    [exportDims, pxScale, w, h, result, ink, background, growthRef, fade, params.seed, stampOpts],
+    [exportDims, pxScale, w, h, lines, ink, background, growthRef, fade, params.seed, stampOpts],
   );
 
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
-    `contour-${params.seed}`,
+    `hatch-${params.seed}`,
     getExportRender,
   );
 
@@ -179,7 +168,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   }, [recorder.recording, draw]);
 
   const updateParam = useCallback(
-    <K extends keyof ContourParams>(key: K, value: ContourParams[K]) => {
+    <K extends keyof HatchParams>(key: K, value: HatchParams[K]) => {
       // Scrub with untreated draft linework so slider drags stay fluid;
       // settle back to the full treatment shortly after the last movement.
       qualityRef.current = 0.5;
@@ -198,7 +187,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_CONTOUR);
+    setParams(DEFAULT_HATCH);
     setInk(INK);
     setBackground(BG);
     setFade(true);
@@ -209,7 +198,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `contour-${params.seed}.${ext}`;
+    a.download = `hatch-${params.seed}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -217,13 +206,13 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   };
 
   const downloadSVG = () => {
-    if (!result.lines.length) return;
-    // Vector — build from the preview result at preview dims so stroke weights
+    if (!lines.length) return;
+    // Vector — build from the preview lines at preview dims so stroke weights
     // read exactly as on screen; SVG scales to any size losslessly.
-    const svg = buildContourSVG(
+    const svg = buildHatchSVG(
       w,
       h,
-      result,
+      lines,
       safeColor(ink, INK),
       "transparent",
       fade,
@@ -234,18 +223,18 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   };
 
   const downloadPNG = (transparent: boolean) => {
-    if (!result.lines.length) return;
-    // Pure magnification of the preview — WYSIWYG, no re-trace divergence.
+    if (!lines.length) return;
+    // Pure magnification of the preview — WYSIWYG, no re-scatter divergence.
     // With the stamp treatment the ink comes from a fixed-resolution bitmap,
     // so supersampling only adds a resample generation — render 1:1 instead.
     const ss = stampOpts ? 1 : undefined;
     void renderMagnifiedPngBlob(exportDims.w, exportDims.h, w, h, (ctx, scale) => {
-      drawContours(
+      drawHatch(
         ctx,
         scale,
         w,
         h,
-        result,
+        lines,
         safeColor(ink, INK),
         transparent ? "transparent" : safeColor(background, BG),
         1,
@@ -256,24 +245,24 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
     }, ss).then((blob) => blob && download(blob, "png"));
   };
 
-  const renderRow = (key: keyof ContourParams) => {
-    const [min, max, step] = CONTOUR_RANGES[key];
+  const renderRow = (key: keyof HatchParams) => {
+    const [min, max, step] = HATCH_RANGES[key];
     const value = params[key];
     return (
       <label
         key={key}
         className="tool-param-row has-tip"
-        data-tip={CONTOUR_HINTS[key]}
+        data-tip={HATCH_HINTS[key]}
       >
         <span className="tool-param-row__header">
-          <span className="tool-param-row__label">{CONTOUR_LABELS[key]}</span>
+          <span className="tool-param-row__label">{HATCH_LABELS[key]}</span>
           <ParamValueInput
             value={value}
             min={min}
             max={max}
             step={step}
-            aria-label={CONTOUR_LABELS[key]}
-            onChange={(v) => updateParam(key, v as ContourParams[typeof key])}
+            aria-label={HATCH_LABELS[key]}
+            onChange={(v) => updateParam(key, v as HatchParams[typeof key])}
           />
         </span>
         <input
@@ -283,7 +272,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
           step={step}
           value={value}
           onChange={(e) =>
-            updateParam(key, +e.target.value as ContourParams[typeof key])
+            updateParam(key, +e.target.value as HatchParams[typeof key])
           }
         />
       </label>
@@ -296,27 +285,25 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       onConfigChange={setConfig}
       fade={fade}
       onFadeChange={setFade}
-      fadeTip="End vectors short of the bottom with tapered tips"
-      sliders={[...SLIDER_KEYS_SIMPLE, ...SLIDER_KEYS_TUNING].map(renderRow)}
+      sliders={SLIDER_KEYS_SIMPLE_HATCH.map(renderRow)}
       ink={ink}
       background={background}
-
       onInkChange={setInk}
       onBackgroundChange={setBackground}
-      strokeTip="Color of the contour lines."
-      backgroundTip="Canvas background color behind the lines."
+      strokeTip="Color of the hatch sticks."
+      backgroundTip="Canvas background color behind the sticks."
       onPNG={downloadPNG}
       onSVG={downloadSVG}
-      exportDisabled={!result.lines.length}
+      exportDisabled={!lines.length}
       recording={recorder.recording}
       recordSupported={recorder.supported}
       onStartRecord={startRecord}
       onStopRecord={stopRecord}
       playing={growing}
       onTogglePlay={toggleGrow}
-      playDisabled={!result.lines.length}
+      playDisabled={!lines.length}
       playLabel="Play"
-      playingLabel="Rising…"
+      playingLabel="Drawing…"
       onReset={reset}
     />
   );
@@ -327,7 +314,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
 
       <section
         className={`specimen-tree specimen-tree--viewport${controlsTarget ? "" : " specimen-tree--wide-controls"}`}
-        aria-label="Contour map canvas"
+        aria-label="Financial Services hatch canvas"
       >
         {!controlsTarget && (
           <aside className="specimen-tree__controls">{controls}</aside>

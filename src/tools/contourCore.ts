@@ -2,7 +2,7 @@ import { contours as d3contours } from "d3-contour";
 import { createNoise2D } from "simplex-noise";
 import { mulberry32 } from "./specimenTreeCore";
 import { sampleLuminance, toneAt, type LumBuffer } from "./flowFieldCore";
-import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
+import { makeFade, strokeFaded, svgFadedPaths, type FadeOptions } from "./dissolveFade";
 import {
   drawStamped,
   stampActive,
@@ -16,6 +16,11 @@ export const CH = 580;
 export const INK = "#00280F";
 export const BG = "#EBFADC";
 
+// Lighter dissolve than the shared default — a topo sheet should stay mostly
+// inked with only a narrow taper right at the edge, not thin out over the
+// whole lower half. Canvas and SVG must share these or the export diverges.
+const CONTOUR_FADE: FadeOptions = { start: 0.92, floor: 0.99, tipFrac: 0.2 };
+
 /**
  * Topographic contour lines. A domain-warped simplex field is sampled onto a
  * grid, then d3-contour traces iso-lines at evenly spaced levels — the nested,
@@ -28,6 +33,7 @@ export interface ContourParams {
   octaves: number; // fbm detail layers
   warp: number; // domain-warp amount — how much the lines meander
   levels: number; // number of contour lines
+  fill: number; // 0..1 — spread contours by area rather than by raw elevation value, so flat plateaus fill with lines instead of sitting blank (independent of line count)
   lineWidth: number; // stroke width
   // ink treatment — the same stamp/cutout render pass the Root Brush runs
   stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
@@ -38,15 +44,15 @@ export interface ContourParams {
 }
 
 export const DEFAULT_CONTOUR: ContourParams = {
-  seed: 79581,
-  fieldScale: 2,
-  octaves: 3,
-  warp: 0.95,
-  levels: 11,
-  lineWidth: 1,
-  // Same treatment defaults as the Root Brush / vertical-card references.
-  stamp: 0.34,
-  cutout: 0.34,
+  seed: 46933,
+  fieldScale: 2.5,
+  octaves: 0,
+  warp: 0,
+  levels: 10,
+  fill: 0.56,
+  lineWidth: 0.3,
+  stamp: 0.33,
+  cutout: 0.72,
   imageInfluence: 0.8,
   contrast: 1.1,
 };
@@ -54,9 +60,10 @@ export const DEFAULT_CONTOUR: ContourParams = {
 export const CONTOUR_RANGES: Record<keyof ContourParams, [number, number, number]> = {
   seed: [1, 99999, 1],
   fieldScale: [2, 18, 0.5],
-  octaves: [1, 6, 1],
+  octaves: [0, 6, 1],
   warp: [0, 2.5, 0.05],
   levels: [3, 20, 1],
+  fill: [0, 1, 0.02],
   lineWidth: [0.3, 2, 0.1],
   stamp: [0, 0.45, 0.01],
   cutout: [0, 1, 0.01],
@@ -70,6 +77,7 @@ export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
   octaves: "Detail",
   warp: "Meander",
   levels: "Density",
+  fill: "Fill",
   lineWidth: "Line Weight",
   stamp: "Stamp",
   cutout: "Line Breaks",
@@ -83,6 +91,7 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   octaves: "Layers of detail folded into the field. More layers add fine crinkle to the coastlines.",
   warp: "How much the field is distorted — turns smooth blobs into meandering, river-like contours.",
   levels: "How many contour lines are drawn between the lowest and highest ground.",
+  fill: "Spreads contours by how much canvas area they cover rather than by raw elevation, so flat plateaus and basins fill with lines instead of sitting blank. Independent of Density — zero spaces lines evenly by elevation (more blank plateaus), one spaces them evenly by area (fuller canvas).",
   lineWidth: "Thickness of the contour strokes.",
   stamp:
     "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
@@ -199,9 +208,32 @@ export function computeContours(
   }
   if (!isFinite(lo) || hi <= lo) return { lines: [] };
 
+  // Sorted copy for area-weighted (percentile) threshold placement — spreads
+  // contours by how much canvas area falls in each band rather than by raw
+  // elevation, so flat plateaus and basins fill with lines instead of
+  // sitting blank. Blended against the plain linear spacing via `fill`.
+  const sorted = Float64Array.from(values);
+  sorted.sort();
+  const n = sorted.length;
+  const fill = Math.min(1, Math.max(0, p.fill));
+
   const levels = Math.max(2, Math.round(p.levels));
+  const rawThresholds: number[] = [];
+  for (let l = 1; l <= levels; l++) {
+    const t = l / (levels + 1);
+    const linear = lo + (hi - lo) * t;
+    const idx = Math.min(n - 1, Math.max(0, Math.floor(t * n)));
+    const byArea = sorted[idx];
+    rawThresholds.push(linear * (1 - fill) + byArea * fill);
+  }
+  // Dedupe — coincident thresholds would trace the same ring twice.
   const thresholds: number[] = [];
-  for (let l = 1; l <= levels; l++) thresholds.push(lo + ((hi - lo) * l) / (levels + 1));
+  for (const t of rawThresholds) {
+    if (thresholds.length === 0 || t > thresholds[thresholds.length - 1]) {
+      thresholds.push(t);
+    }
+  }
+  if (thresholds.length < 2) return { lines: [] };
 
   const generator = d3contours().size([gw, gh]).thresholds(thresholds);
   const geo = generator(Array.from(values));
@@ -269,7 +301,7 @@ function paintContourLines(
   ctx.strokeStyle = ink;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed, ...CONTOUR_FADE }) : null;
   let lineId = 0;
   for (const line of result.lines) {
     if (line.order > progress) {
@@ -310,7 +342,7 @@ export function buildContourSVG(
   stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed, ...CONTOUR_FADE }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
   ];

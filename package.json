@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "d3-contour": "^4.0.2",
+    "d3-delaunay": "^6.0.4",
     "mp4-muxer": "^5.2.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@types/d3-contour": "^3.0.6",
+    "@types/d3-delaunay": "^6.0.4",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.5.2",

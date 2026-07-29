@@ -4,6 +4,7 @@ import logo from './assets/emergence-logo.png';
 import RootBrush from './tools/RootBrush';
 import FlowField from './tools/FlowField';
 import Jagged from './tools/Jagged';
+import Hatch from './tools/Hatch';
 import Contour from './tools/Contour';
 import RoadColors from './tools/RoadColors';
 import Mesh from './tools/Mesh';
@@ -12,7 +13,7 @@ import Network from './tools/Network';
 import RootsText from './tools/RootsText';
 
 // Host for active-tool controls — they portal into the mode-rail panel under the
-// Branch/Field (and brush/tool) toggles so nav + settings read as one unit.
+// Branch/Field (and vertical) toggles so nav + settings read as one unit.
 
 interface ToolDef {
   id: string;
@@ -23,7 +24,8 @@ interface ToolDef {
 const TOOLS: ToolDef[] = [
   { id: 'root-brush', label: 'Root Brush', Component: RootBrush },
   { id: 'flow-field', label: 'Fingerprint', Component: FlowField },
-  { id: 'jagged', label: 'Jagged Fingerprint', Component: Jagged },
+  { id: 'jagged', label: 'Circuit Traces', Component: Jagged },
+  { id: 'hatch', label: 'Hatch', Component: Hatch },
   { id: 'contour', label: 'Contour', Component: Contour },
   { id: 'road-colors', label: 'Map', Component: RoadColors },
   { id: 'mesh', label: 'Mesh', Component: Mesh },
@@ -33,51 +35,48 @@ const TOOLS: ToolDef[] = [
 ];
 
 type Family = 'branch' | 'field';
-type Brush = 'organic' | 'engineered';
-/** Abstract/Topo map to brush-specific tools; Mesh/Signal/Network are shared vertical fields. */
-type Style = 'abstract' | 'topographic' | 'mesh' | 'signal' | 'network';
 
-const STYLE_LABEL: Record<Style, string> = {
-  abstract: 'Abstract',
-  topographic: 'Topo',
-  mesh: 'Mesh',
-  signal: 'Signal',
-  network: 'Network',
-};
+/** Industry verticals — each maps to a Field generator. */
+type VerticalId =
+  | 'healthcare'
+  | 'infrastructure'
+  | 'supply-chain'
+  | 'automotive'
+  | 'fintech'
+  | 'financial-services'
+  | 'telecom'
+  | 'education';
 
-/** Field tools by brush × style. Mesh / Signal / Network are vertical-specific. */
-const FIELD_TOOL: Record<Brush, Record<Style, string>> = {
-  organic: {
-    abstract: 'flow-field',
-    topographic: 'contour',
-    mesh: 'mesh',
-    signal: 'signal',
-    network: 'network',
-  },
-  engineered: {
-    abstract: 'jagged',
-    topographic: 'road-colors',
-    mesh: 'mesh',
-    signal: 'signal',
-    network: 'network',
-  },
-};
+interface VerticalDef {
+  id: VerticalId;
+  label: string;
+  toolId: string;
+}
+
+const VERTICALS: VerticalDef[] = [
+  { id: 'healthcare', label: 'Healthcare', toolId: 'flow-field' },
+  { id: 'infrastructure', label: 'Infrastructure', toolId: 'jagged' },
+  { id: 'supply-chain', label: 'Supply Chain', toolId: 'contour' },
+  { id: 'automotive', label: 'Automotive', toolId: 'road-colors' },
+  { id: 'fintech', label: 'FinTech', toolId: 'mesh' },
+  // Short hatch / matchstick field — scattered sticks on a facet lattice.
+  { id: 'financial-services', label: 'Financial Services', toolId: 'hatch' },
+  { id: 'telecom', label: 'Telecom', toolId: 'signal' },
+  { id: 'education', label: 'Education', toolId: 'network' },
+];
 
 export default function App() {
-  // Nested-toggle nav. Branch/Field × Organic/Engineered × Abstract/Topographic.
-  // Branch is Organic-only — the Brush toggle shows only in Field mode.
+  // Branch = parent brand (Root Brush). Field = pick an industry vertical.
   const [family, setFamily] = useState<Family>('branch');
-  const [brush, setBrush] = useState<Brush>('organic');
-  const [style, setStyle] = useState<Style>('abstract');
+  const [vertical, setVertical] = useState<VerticalId>('healthcare');
   const [toolControlsHost, setToolControlsHost] = useState<HTMLElement | null>(null);
 
   const withToolPanel = family === 'branch' || family === 'field';
 
-  // Resolve the nav state to the active tool.
-  const activeId = (() => {
-    if (family === 'field') return FIELD_TOOL[brush][style];
-    return 'root-brush';
-  })();
+  const activeVertical =
+    VERTICALS.find((v) => v.id === vertical) ?? VERTICALS[0];
+  const activeId =
+    family === 'field' ? activeVertical.toolId : 'root-brush';
   const active = TOOLS.find((t) => t.id === activeId) ?? TOOLS[0];
   const Active = active.Component;
 
@@ -119,44 +118,21 @@ export default function App() {
 
               {family === 'field' && (
                 <div className="mode-rail__group">
-                  <span className="mode-rail__label">Brush</span>
-                  <div className="seg seg--alt" role="group" aria-label="Brush">
-                    {(['organic', 'engineered'] as Brush[]).map((b) => (
+                  <span className="mode-rail__label">Vertical</span>
+                  <div
+                    className="seg seg--alt seg--vertical"
+                    role="group"
+                    aria-label="Industry vertical"
+                  >
+                    {VERTICALS.map((v) => (
                       <button
-                        key={b}
+                        key={v.id}
                         type="button"
-                        className={`seg__opt${b === brush ? ' seg__opt--active' : ''}`}
-                        aria-pressed={b === brush}
-                        onClick={() => setBrush(b)}
+                        className={`seg__opt${v.id === vertical ? ' seg__opt--active' : ''}`}
+                        aria-pressed={v.id === vertical}
+                        onClick={() => setVertical(v.id)}
                       >
-                        {b === 'organic' ? 'Organic' : 'Engineered'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {family === 'field' && (
-                <div className="mode-rail__group">
-                  <span className="mode-rail__label">Field</span>
-                  <div className="seg seg--alt seg--wrap" role="group" aria-label="Field style">
-                    {(
-                      [
-                        'abstract',
-                        'topographic',
-                        'mesh',
-                        'signal',
-                        'network',
-                      ] as Style[]
-                    ).map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        className={`seg__opt${s === style ? ' seg__opt--active' : ''}`}
-                        aria-pressed={s === style}
-                        onClick={() => setStyle(s)}
-                      >
-                        {STYLE_LABEL[s]}
+                        {v.label}
                       </button>
                     ))}
                   </div>
@@ -185,7 +161,10 @@ export default function App() {
           ) : active.id === 'road-colors' ? (
             <RoadColors key="road-colors" controlsTarget={toolControlsHost} />
           ) : (
-            <Active key={active.id} controlsTarget={toolControlsHost} />
+            <Active
+              key={`${active.id}-${family === 'field' ? vertical : 'branch'}`}
+              controlsTarget={toolControlsHost}
+            />
           )}
         </main>
       </div>

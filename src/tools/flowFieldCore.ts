@@ -10,8 +10,8 @@ import {
 // Generative canvas size — matches the 2D tree tool so cards feel consistent.
 export const FW = 680;
 export const FH = 580;
-export const INK = "#00280F";
-export const BG = "#EBFADC";
+export const INK = "#C0B663"; // Gold — matches Healthcare vertical card
+export const BG = "#F5F5F2"; // Cream
 
 const TAU = Math.PI * 2;
 
@@ -34,6 +34,8 @@ export interface FlowParams {
   lineWidth: number; // base stroke width
   widthVar: number; // 0..1 random variation in each line's stroke width
   jitter: number; // 0..1 scatter of seed points off their grid
+  dash: number; // px length of each inked run along a line (0 = unbroken)
+  dashGap: number; // gap between runs, as a fraction of the run length
   arrowSize: number; // arrowhead size (arrows mode only)
   // emergence mode — a single point the ridges fan out from
   emergeX: number; // 0..1 horizontal position of the emergence point
@@ -54,16 +56,20 @@ export interface FlowParams {
 
 export const DEFAULT_FLOW: FlowParams = {
   seed: 60132,
-  fieldScale: 4,
-  swirl: 1,
-  turbulence: 2,
-  drift: -30,
-  spacing: 8,
+  // Broad, near-laminar currents sweeping down to the left — barely any swirl,
+  // so the lanes read as one family of long arcs rather than eddies.
+  fieldScale: 3,
+  swirl: 0.1,
+  turbulence: 1,
+  drift: 144,
+  spacing: 12,
   stepLen: 6,
   maxLen: 400,
-  lineWidth: 1,
+  lineWidth: 1.4,
   widthVar: 0.1,
   jitter: 1,
+  dash: 80,
+  dashGap: 0.05,
   arrowSize: 4,
   emergeX: 0.5,
   emergeY: 0,
@@ -72,10 +78,12 @@ export const DEFAULT_FLOW: FlowParams = {
   emergeRoots: 10,
   emergeNest: 2,
   emergeFragments: 24,
-  // Ink treatment values matched against the vertical-card references — the
-  // same render pass (and defaults) as the Root Brush.
-  stamp: 0.34,
-  cutout: 0.34,
+  // No fatten pass — stamping would fuse the lanes back together. A light
+  // nibble on top of the dash pass keeps the run ends from reading as cut.
+  // Line Breaks is a fraction of the ink's own weight, so with no stamp to
+  // fatten it this sits mid-slider to bite the same amount.
+  stamp: 0,
+  cutout: 0.58,
   imageInfluence: 0.85,
   threshold: 0.04,
   contrast: 1.1,
@@ -122,6 +130,8 @@ export const FLOW_RANGES: Record<
   lineWidth: [0.3, 3, 0.1],
   widthVar: [0, 1, 0.05],
   jitter: [0, 1, 0.02],
+  dash: [0, 200, 1],
+  dashGap: [0.05, 1.5, 0.05],
   arrowSize: [2, 10, 0.5],
   emergeX: [0, 1, 0.01],
   emergeY: [-0.3, 1, 0.01],
@@ -142,13 +152,15 @@ export const FLOW_LABELS: Record<keyof FlowParams, string> = {
   fieldScale: "Field Scale",
   swirl: "Swirl",
   turbulence: "Turbulence",
-  drift: "Drift",
+  drift: "Direction",
   spacing: "Density",
   stepLen: "Step",
   maxLen: "Length",
   lineWidth: "Line Weight",
   widthVar: "Width Var",
   jitter: "Scatter",
+  dash: "Dash",
+  dashGap: "Dash Gap",
   arrowSize: "Arrow Size",
   emergeX: "Emerge X",
   emergeY: "Emerge Y",
@@ -170,13 +182,17 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
     "Size of the swirls. Lower values make big sweeping currents; higher values make tight eddies.",
   swirl: "How far lines curve away from the base drift direction. Zero is nearly straight.",
   turbulence: "Layers of detail folded into the field. More octaves make it churn.",
-  drift: "Base direction the whole field flows toward, in degrees.",
+  drift:
+    "Direction the whole field flows toward, in degrees — 0 runs left to right, 90 runs top to bottom, negative aims upward. Sets which corner the current sweeps out of.",
   spacing: "Gap kept between neighbouring lines. Smaller packs the field denser.",
   stepLen: "How far each line advances per step. Smaller is smoother but slower.",
   maxLen: "Longest a single line can run before it stops.",
   lineWidth: "Base thickness of the strokes.",
   widthVar: "Random variation in each line's thickness — higher mixes hairlines and bold strokes like an engraving.",
   jitter: "Random scatter of each line's starting point off the grid.",
+  dash:
+    "Length of each inked run along a lane. Runs shorten as they descend, so the field breaks up toward the bottom. Zero draws every lane unbroken.",
+  dashGap: "Gap between runs, measured as a fraction of the run length.",
   arrowSize: "Size of the arrowheads in arrows mode.",
   emergeX: "Horizontal position of the single point the ridges fan out from, left to right.",
   emergeY: "Vertical position of the crown the ridges fan down from. 0 sits it at the top edge; negative pushes it above the frame so only the widening fan shows.",
@@ -200,8 +216,15 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
 // the stroke width.
 export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
   "seed",
+  // Direction + swirl steer the whole field — the two knobs for aiming the
+  // current, so they belong on the simple rail next to density.
+  "drift",
+  "swirl",
+  "fieldScale",
   "spacing",
   "lineWidth",
+  "dash",
+  "dashGap",
   "cutout",
 ];
 
@@ -221,6 +244,8 @@ export const SLIDER_KEYS_LINE: (keyof FlowParams)[] = [
   "lineWidth",
   "widthVar",
   "jitter",
+  "dash",
+  "dashGap",
 ];
 
 // emergeX is intentionally omitted — the crown is always horizontally centred.
@@ -649,6 +674,82 @@ export function buildImageField(buf: LumBuffer, p: FlowParams): Field {
  * neighbouring lines roughly `spacing` apart, so the field reads as clean,
  * non-crossing linework rather than a tangle.
  */
+/**
+ * Cut each traced lane into inked runs separated by gaps, so the field reads as
+ * broken ridge strokes rather than continuous contours. Runs shorten with depth
+ * — long sweeps at the top breaking down to short ticks near the bottom.
+ */
+function splitDashes(
+  lines: FlowLine[],
+  h: number,
+  p: FlowParams,
+  rand: () => number,
+): FlowLine[] {
+  if (p.dash <= 0) return lines;
+  const DEPTH_SHORTEN = 0.7; // fraction of the run length lost by the bottom edge
+  const MIN_RUN = 2;
+  const out: FlowLine[] = [];
+
+  for (const line of lines) {
+    const pts = line.pts;
+    const n = pts.length / 2;
+    if (n < 2) continue;
+
+    // Arc-length table so runs can be cut at exact distances along the lane.
+    const cum = new Float64Array(n);
+    for (let i = 1; i < n; i++) {
+      cum[i] =
+        cum[i - 1] +
+        Math.hypot(pts[i * 2] - pts[i * 2 - 2], pts[i * 2 + 1] - pts[i * 2 - 1]);
+    }
+    const total = cum[n - 1];
+    if (total <= MIN_RUN) continue;
+
+    // Vertex index at or before distance s, plus the point itself.
+    let cursor = 0;
+    const seek = (s: number) => {
+      while (cursor < n - 2 && cum[cursor + 1] < s) cursor++;
+      while (cursor > 0 && cum[cursor] > s) cursor--;
+      return cursor;
+    };
+    const pointAt = (s: number, i: number) => {
+      const span = cum[i + 1] - cum[i];
+      const t = span > 1e-9 ? (s - cum[i]) / span : 0;
+      return [
+        pts[i * 2] + (pts[i * 2 + 2] - pts[i * 2]) * t,
+        pts[i * 2 + 1] + (pts[i * 2 + 3] - pts[i * 2 + 1]) * t,
+      ];
+    };
+
+    let s = rand() * p.dash * 0.8; // stagger phases so runs don't line up across lanes
+    while (s < total) {
+      const i0 = seek(s);
+      const [ax, ay] = pointAt(s, i0);
+      const depth = Math.min(1, Math.max(0, ay / h));
+      const run =
+        p.dash * (1 - DEPTH_SHORTEN * depth) * (0.65 + rand() * 0.7);
+      if (run < MIN_RUN) break;
+      const e = Math.min(total, s + run);
+
+      if (e - s > MIN_RUN) {
+        const dashPts: number[] = [ax, ay];
+        // Keep the lane's own vertices between the cuts so the run stays curved.
+        for (let i = i0 + 1; i < n && cum[i] < e; i++) {
+          dashPts.push(pts[i * 2], pts[i * 2 + 1]);
+        }
+        const i1 = seek(e);
+        const [bx, by] = pointAt(e, i1);
+        dashPts.push(bx, by);
+        out.push({ pts: dashPts, w: line.w, order: 0, arrow: false });
+      }
+
+      s = e + Math.max(1.5, run * p.dashGap * (0.7 + rand() * 0.6));
+    }
+  }
+
+  return out;
+}
+
 export function traceStreamlines(
   field: Field,
   w: number,
@@ -766,8 +867,10 @@ export function traceStreamlines(
     }
   }
 
-  assignOrder(lines);
-  return lines;
+  // Break the lanes into runs before ordering, so growth reveals run by run.
+  const dashed = splitDashes(lines, h, p, mulberry32(p.seed ^ 0xda51));
+  assignOrder(dashed);
+  return dashed;
 }
 
 /** A grid of short arrows sampling the field — the wind / current-map look. */

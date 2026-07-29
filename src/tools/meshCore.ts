@@ -20,6 +20,8 @@ export interface MeshParams {
   spacing: number; // grid cell size in px
   warp: number; // displacement amplitude × cell size
   fieldScale: number; // noise feature size — cells across long edge
+  fieldX: number; // pan the warp field, in warp-wave widths
+  fieldY: number;
   lineWidth: number;
   jitter: number; // 0..1 node scatter before warping
   // ink treatment — the same stamp/cutout render pass the Root Brush runs
@@ -28,22 +30,26 @@ export interface MeshParams {
 }
 
 export const DEFAULT_MESH: MeshParams = {
-  seed: 41762,
-  spacing: 18,
-  warp: 1.35,
-  fieldScale: 3.5,
-  lineWidth: 1,
-  jitter: 0.12,
+  seed: 17545,
+  spacing: 36,
+  warp: 5,
+  fieldScale: 1.5,
+  fieldX: -1.6,
+  fieldY: 0,
+  lineWidth: 0.6,
+  jitter: 0,
   // Same treatment defaults as the Root Brush / vertical-card references.
   stamp: 0.34,
-  cutout: 0.34,
+  cutout: 0.63,
 };
 
 export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
   seed: [1, 99999, 1],
-  spacing: [8, 40, 1],
-  warp: [0, 2.5, 0.05],
+  spacing: [8, 72, 1],
+  warp: [0, 5, 0.05],
   fieldScale: [1.5, 10, 0.5],
+  fieldX: [-3, 3, 0.05],
+  fieldY: [-3, 3, 0.05],
   lineWidth: [0.3, 2.5, 0.1],
   jitter: [0, 0.5, 0.02],
   stamp: [0, 0.45, 0.01],
@@ -55,6 +61,8 @@ export const MESH_LABELS: Record<keyof MeshParams, string> = {
   spacing: "Density",
   warp: "Warp",
   fieldScale: "Field Scale",
+  fieldX: "Warp X",
+  fieldY: "Warp Y",
   lineWidth: "Line Weight",
   jitter: "Jitter",
   stamp: "Stamp",
@@ -65,7 +73,11 @@ export const MESH_HINTS: Record<keyof MeshParams, string> = {
   seed: "Random starting value. Same seed always produces the same mesh.",
   spacing: "Grid cell size. Lower values pack a denser net.",
   warp: "How far nodes drift from the rectilinear lattice.",
-  fieldScale: "Size of the warp waves. Lower values make broad drapes; higher packs tighter ripples.",
+  fieldScale:
+    "Size of the warp waves. Lower values make broad drapes; higher packs tighter ripples.",
+  fieldX:
+    "Slides the warp sideways without changing its shape — walk a fold to where you want it. One step moves the pattern by a full warp wave.",
+  fieldY: "Slides the warp up and down without changing its shape.",
   lineWidth: "Thickness of the mesh strokes.",
   jitter: "Scatter applied to nodes before warping — softens the lattice.",
   stamp:
@@ -77,6 +89,13 @@ export const MESH_HINTS: Record<keyof MeshParams, string> = {
 export const SLIDER_KEYS_SIMPLE_MESH: (keyof MeshParams)[] = [
   "seed",
   "spacing",
+  // Temporary tuning sliders — drop these once the warp defaults are dialled
+  // in, to match the other simple rails.
+  "warp",
+  "fieldScale",
+  "fieldX",
+  "fieldY",
+  "jitter",
   "lineWidth",
   "cutout",
 ];
@@ -134,6 +153,11 @@ export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
   const rows = Math.ceil(h / cell) + 2;
   const noiseCell = Math.max(w, h) / Math.max(1.5, p.fieldScale);
   const amp = p.warp * cell;
+  // Pan in position space, not noise space: both octaves then sample at
+  // (x + ox), so the whole field translates rigidly instead of the layers
+  // sliding against each other and morphing the fold.
+  const ox = p.fieldX * noiseCell;
+  const oy = p.fieldY * noiseCell;
   const rand = mulberry32(p.seed ^ 0x51ed);
 
   const xs = new Float64Array(cols * rows);
@@ -148,8 +172,8 @@ export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
         x += (rand() - 0.5) * cell * p.jitter;
         y += (rand() - 0.5) * cell * p.jitter;
       }
-      const nx = x / noiseCell;
-      const ny = y / noiseCell;
+      const nx = (x + ox) / noiseCell;
+      const ny = (y + oy) / noiseCell;
       const dx =
         (fbm(nx, ny, p.seed, 3) - 0.5) * 2 * amp +
         (fbm(nx * 0.55 + 19, ny * 0.55, p.seed ^ 0xa341, 2) - 0.5) * amp * 0.55;
@@ -174,7 +198,7 @@ export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
       const i = r * cols + c;
       pts.push(xs[i], ys[i]);
     }
-    pushLine(pts, r / Math.max(1, rows - 1) * 0.5);
+    pushLine(pts, (r / Math.max(1, rows - 1)) * 0.5);
   }
 
   // Vertical runs
@@ -279,6 +303,8 @@ function paintMeshLines(
     strokeFaded(ctx, draw, line.w, fadeOpts);
   }
 }
+
+export const __debugPaintMesh = paintMeshLines;
 
 export function buildMeshSVG(
   w: number,

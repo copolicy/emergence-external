@@ -47,9 +47,13 @@ export interface FadeFns {
  * Softening is relative to each vector's end — not a canvas-wide wash.
  */
 export function makeFade(_w: number, h: number, opts: FadeOptions = {}): FadeFns {
-  const start = opts.start ?? 0.58; // keep density longer; thin only in the lower band
-  const floor = opts.floor ?? 0.94; // small clear margin at the bottom
-  const tipFrac = opts.tipFrac ?? 0.42;
+  // A light dissolve: the fields hold full density through most of their depth
+  // and soften only in the bottom band, rather than washing out over the whole
+  // lower half. The tips still taper to nothing — ending them on a blunt stub
+  // instead leaves visible nubs that read as speckle on the denser fields.
+  const start = opts.start ?? 0.78; // no line ends above this depth
+  const floor = opts.floor ?? 0.97; // small clear margin at the bottom
+  const tipFrac = opts.tipFrac ?? 0.28;
   const endAlpha = opts.endAlpha ?? 0.08;
   const endWidth = opts.endWidth ?? 0.02;
   const power = opts.power ?? 1.35;

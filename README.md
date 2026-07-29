@@ -6,17 +6,17 @@ Each tool lives in a tab at the top and renders to a canvas you can export as PN
 A small system for compounding simple inputs into something that grows.
 
 ## Tools
-Parent Brand : Organic Branching
+Parent Brand : Organic Branching (Branch mode)
 
-8 Verticals :
-- Healthcare — Fingerprint (Organic × Abstract)
-- Infrastructure — Jagged Fingerprint (Engineered × Abstract)
-- Supply chain — Contour (Organic × Topo)
-- Automotive — Map (Engineered × Topo)
-- FinTech — Mesh (Field × Mesh)
-- Financial Services
-- Telecom — Signal (Field × Signal)
-- Education — Network (Field × Network)
+8 Verticals (Field mode) :
+- Healthcare — Fingerprint
+- Infrastructure — Circuit Traces
+- Supply chain — Contour
+- Automotive — Map
+- FinTech — Mesh
+- Financial Services — Hatch
+- Telecom — Signal
+- Education — Network
 
 ## Develop locally
 

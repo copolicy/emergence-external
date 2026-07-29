@@ -71,10 +71,9 @@ export function stampOptsForStroke(p: {
     : undefined;
 }
 
-// Blur radii in preview-space px at each slider's max, and the alpha cut
-// levels. Both sliders map linearly onto their radius, independently:
+// Blur radii in preview-space px and the alpha cut levels for each pass:
 //   stamp  — blur + LOW threshold: the blurred skirt reads as solid ink, so
-//            the pass fattens and smooths.
+//            the pass fattens and smooths. Radius is linear in the slider.
 //   cutout — a morphological OPENING built from two blur+threshold steps:
 //            erode (high cut — pinches thin spots into breaks and shaves
 //            nubs), then dilate by the same radius (low cut — restores the
@@ -83,13 +82,31 @@ export function stampOptsForStroke(p: {
 //            inward, visibly reducing the line weight.
 const STAMP_BLUR_MAX = 5;
 const STAMP_THRESHOLD = 0.08;
-const CUTOUT_BLUR_MAX = 3;
 // Erode by ~0.55σ (Φ(0.55) of the blurred edge profile): a full sigma erodes
 // the entire half-width of these thin strokes and wipes the drawing; 0.55σ
 // pinches only genuinely thin spots. Dilate back slightly MORE (~0.75σ) —
 // the surplus pre-compensates the final smoothing pass below.
 const CUTOUT_ERODE_CUT = 0.709;
+const CUTOUT_ERODE_SIGMAS = 0.55;
 const CUTOUT_DILATE_CUT = 0.227;
+// How deep the cutout erodes is set as a FRACTION OF THE INK'S OWN HALF-WIDTH,
+// not as an absolute radius. Whether ink breaks depends on how far the erode
+// eats relative to how thick the ink is, so an absolute radius made the slider
+// mean a different thing at every other setting: the stamp pass fattens the
+// ink, so one Line Breaks value did nothing at a high Stamp and erased the
+// whole drawing at a low one. As a fraction it means the same thing at every
+// Stamp and Line Weight. 0.57 is the value at which the sliders' shared
+// defaults (Stamp 0.34 / Line Breaks 0.34) land on the radius the old absolute
+// mapping gave them, so every tool tuned against the PSD reference is
+// unchanged. Note the top of the slider still erodes thin linework away
+// entirely — the half-width below is the semi-infinite-edge approximation,
+// which overestimates how fat the stamp pass actually leaves a hairline.
+const CUTOUT_MAX_ERODE = 0.57;
+// The ink the erode measures against: the reference 1px stroke's half-width,
+// plus however far the stamp pass pushed the edge out. A blurred edge cut at
+// STAMP_THRESHOLD sits ~1.405σ (Φ⁻¹(1 − 0.08)) outside the original one.
+const REF_HALF_WIDTH = 0.5;
+const STAMP_DILATE_SIGMAS = 1.405;
 // Final pass, echoing Photoshop's order (Stamp smooths AFTER Cutout breaks):
 // a gentle blur + 50% cut that cleans the ragged nicks the erode leaves and
 // rounds the ends of the broken fragments. Runs at a fraction of the cutout
@@ -110,11 +127,13 @@ const TREATMENT_DPR = 4;
 function stampSteps(stamp: StampOpts): { blur: number; cut: number }[] {
   const tScale =
     (stamp.lineWeight ?? TREATMENT_WEIGHT_REF) / TREATMENT_WEIGHT_REF;
-  const steps = [
-    { blur: stamp.amount * STAMP_BLUR_MAX * tScale, cut: STAMP_THRESHOLD },
-  ];
+  const stampBlur = stamp.amount * STAMP_BLUR_MAX * tScale;
+  const steps = [{ blur: stampBlur, cut: STAMP_THRESHOLD }];
   if (stamp.cutout > 0) {
-    const r = stamp.cutout * CUTOUT_BLUR_MAX * tScale;
+    const halfWidth =
+      REF_HALF_WIDTH * tScale + STAMP_DILATE_SIGMAS * stampBlur;
+    const erode = stamp.cutout * CUTOUT_MAX_ERODE * halfWidth;
+    const r = erode / CUTOUT_ERODE_SIGMAS;
     steps.push(
       { blur: r, cut: CUTOUT_ERODE_CUT },
       { blur: r, cut: CUTOUT_DILATE_CUT },
@@ -306,6 +325,23 @@ export function drawStamped(
   );
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
+
+export function __debugStamp(
+  w: number,
+  h: number,
+  ink: string,
+  stamp: StampOpts,
+  paint: StampPaint,
+) {
+  const t = runStampPipeline(w, h, ink, { ...stamp, quality: 1 }, paint, true);
+  return { field: t.field!, pw: t.pw, ph: t.ph, iso: t.iso!, tDpr: t.tDpr };
+}
+
+export function __debugSteps(stamp: StampOpts) {
+  return stampSteps(stamp);
+}
+
+export const __debugTrace = traceStampField;
 
 /**
  * The treated ink as a single SVG path `d` (preview coords, evenodd fill).
