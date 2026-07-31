@@ -129,7 +129,7 @@ export const FLOW_RANGES: Record<
   spacing: [4, 30, 1],
   stepLen: [2, 10, 0.5],
   maxLen: [40, 400, 10],
-  lineWidth: [0.3, 3, 0.1],
+  lineWidth: [0.3, 3, 0.01],
   widthVar: [0, 1, 0.05],
   jitter: [0, 1, 0.02],
   dash: [0, 200, 1],

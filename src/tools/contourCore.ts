@@ -41,6 +41,7 @@ export interface ContourParams {
   warp: number; // domain-warp amount — how much the lines meander
   levels: number; // number of contour lines
   fill: number; // 0..1 — spread contours by area rather than by raw elevation value, so flat plateaus fill with lines instead of sitting blank (independent of line count)
+  evenness: number; // 0..1 — flatten the broad elevation trend so every part of the canvas carries relief, and the linework spreads instead of bunching on the steep side
   lineWidth: number; // stroke width
   // ink treatment — the same stamp/cutout render pass the Root Brush runs
   stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
@@ -55,10 +56,18 @@ export const DEFAULT_CONTOUR: ContourParams = {
   fieldScale: 3,
   octaves: 0,
   warp: 0,
-  levels: 10,
-  fill: 0.6,
+  levels: 12,
+  // Contours are placed mostly by raw elevation. Area-weighted placement (see
+  // `fill`) crowds the thresholds into whatever value band covers the most
+  // canvas, which starves the peaks and basins of lines — the opposite of the
+  // even coverage it was reached for. `evenness` does that job properly.
+  fill: 0.2,
+  evenness: 0.6,
   lineWidth: 0.3,
-  stamp: 0.33,
+  // Ink treatment, both dialled in against the reference and locked — no
+  // sliders, so the pass always fattens the contours and breaks them by this
+  // much.
+  stamp: 0.39,
   cutout: 0.72,
   imageInfluence: 0.8,
   contrast: 1.1,
@@ -71,7 +80,8 @@ export const CONTOUR_RANGES: Record<keyof ContourParams, [number, number, number
   warp: [0, 2.5, 0.05],
   levels: [3, 20, 1],
   fill: [0, 1, 0.02],
-  lineWidth: [0.3, 2, 0.1],
+  evenness: [0, 1, 0.02],
+  lineWidth: [0.3, 1, 0.01],
   stamp: [0, 0.45, 0.01],
   cutout: [0, 1, 0.01],
   imageInfluence: [0, 1, 0.02],
@@ -85,6 +95,7 @@ export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
   warp: "Meander",
   levels: "Density",
   fill: "Fill",
+  evenness: "Spread",
   lineWidth: "Line Weight",
   stamp: "Stamp",
   cutout: "Line Breaks",
@@ -98,7 +109,9 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   octaves: "Layers of detail folded into the field. More layers add fine crinkle to the coastlines.",
   warp: "How much the field is distorted — turns smooth blobs into meandering, river-like contours.",
   levels: "How many contour lines are drawn between the lowest and highest ground.",
-  fill: "Spreads contours by how much canvas area they cover rather than by raw elevation, so flat plateaus and basins fill with lines instead of sitting blank. Independent of Density — zero spaces lines evenly by elevation (more blank plateaus), one spaces them evenly by area (fuller canvas).",
+  fill: "Spreads contours by how much canvas area they cover rather than by raw elevation. Zero spaces lines evenly by elevation; one crowds them into whichever band covers the most canvas, which fills the plateaus but empties the peaks and basins.",
+  evenness:
+    "Levels out how much relief each part of the canvas carries, by flattening the broad rise and fall underneath the landforms. Zero leaves the raw field, where a seed can put all its slope in one corner and leave the rest blank; one gives every region its own contour rings. Shapes and their scale stay the same — only how evenly the lines are spread changes.",
   lineWidth: "Thickness of the contour strokes.",
   stamp:
     "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
@@ -109,11 +122,11 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
 };
 
 // The only sliders exposed in the UI. Every other param stays at its default,
-// including Density (`levels`), which is settled at 10.
+// including Density (`levels`), settled at 10, and the ink treatment pair Stamp
+// and Line Breaks, settled at 0.39 and 0.72.
 export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
   "seed",
   "lineWidth",
-  "cutout",
 ];
 
 export const SLIDER_KEYS_FIELD: (keyof ContourParams)[] = [
@@ -181,16 +194,82 @@ function buildField(
       const qx = warpNoiseX(nx, ny);
       const qy = warpNoiseY(nx, ny);
       const n = fbm(nx + p.warp * qx, ny + p.warp * qy, noise);
-      let v = (n + 1) / 2; // 0..1
+      values[j * gw + i] = (n + 1) / 2; // 0..1
+    }
+  }
 
-      if (buf) {
+  // Level over roughly half a landform: broader than that and the trend the
+  // blank areas come from survives; tighter and it starts eating the landforms
+  // themselves.
+  const gridPx = w / (gw - 1);
+  levelRelief(values, gw, gh, Math.max(1, Math.round(cell / 2 / gridPx)), p.evenness);
+
+  if (buf) {
+    for (let j = 0; j < gh; j++) {
+      for (let i = 0; i < gw; i++) {
+        const px = (i / (gw - 1)) * w;
+        const py = (j / (gh - 1)) * h;
         const d = toneAt(buf, px * (buf.width / w), py * (buf.height / h), p);
-        v = v * (1 - p.imageInfluence) + d * p.imageInfluence;
+        const k = j * gw + i;
+        values[k] = values[k] * (1 - p.imageInfluence) + d * p.imageInfluence;
       }
-      values[j * gw + i] = v;
     }
   }
   return values;
+}
+
+// How much the high-passed field is stretched back out. Subtracting the local
+// mean leaves a much narrower spread than the raw field, and without this the
+// thresholds would sit far outside it and trace almost nothing.
+const RELIEF_GAIN = 2.2;
+
+/**
+ * Flatten the broad rise and fall under the landforms, in place, by subtracting
+ * a local mean taken over roughly half a landform. What's left is each region's
+ * own relief, so a seed that happens to pile all its slope into one corner
+ * still carries contour lines everywhere else. `amount` blends against the raw
+ * field; 0 leaves it untouched.
+ */
+function levelRelief(
+  values: Float64Array,
+  gw: number,
+  gh: number,
+  radius: number,
+  amount: number,
+) {
+  if (!(amount > 0)) return;
+  const blurred = boxBlur(values, gw, gh, radius);
+  const a = Math.min(1, amount);
+  for (let k = 0; k < values.length; k++) {
+    const evened = 0.5 + (values[k] - blurred[k]) * RELIEF_GAIN;
+    values[k] = values[k] * (1 - a) + evened * a;
+  }
+}
+
+/** Separable box blur, edge-clamped. */
+function boxBlur(src: Float64Array, gw: number, gh: number, r: number): Float64Array {
+  const tmp = new Float64Array(gw * gh);
+  const out = new Float64Array(gw * gh);
+  for (let j = 0; j < gh; j++) {
+    const row = j * gw;
+    for (let i = 0; i < gw; i++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) {
+        sum += src[row + Math.min(gw - 1, Math.max(0, i + k))];
+      }
+      tmp[row + i] = sum / (2 * r + 1);
+    }
+  }
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) {
+        sum += tmp[Math.min(gh - 1, Math.max(0, j + k)) * gw + i];
+      }
+      out[j * gw + i] = sum / (2 * r + 1);
+    }
+  }
+  return out;
 }
 
 export function computeContours(

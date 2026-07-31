@@ -1,6 +1,8 @@
 interface RecordButtonProps {
   /** True while recording — flips the control to a "stop" affordance. */
   recording: boolean;
+  /** Share of the animation captured so far, 0…1. Shown in place of "Stop". */
+  progress?: number;
   /** Hide entirely when the browser can't record canvas video. */
   supported?: boolean;
   disabled?: boolean;
@@ -33,6 +35,7 @@ const StopIcon = () => (
  */
 export default function RecordButton({
   recording,
+  progress = 0,
   supported = true,
   disabled,
   onStart,
@@ -42,6 +45,9 @@ export default function RecordButton({
   if (!supported) return null;
 
   if (recording) {
+    // Capture renders every frame at export resolution, so it can run slower
+    // than the animation itself — the percentage says it's still working.
+    const pct = Math.round(progress * 100);
     return (
       <button
         type="button"
@@ -51,7 +57,7 @@ export default function RecordButton({
         title="Stop recording"
       >
         <StopIcon />
-        Stop
+        {pct > 0 ? `${pct}%` : "Stop"}
       </button>
     );
   }

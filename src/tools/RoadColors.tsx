@@ -6,7 +6,10 @@ import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
 import PaletteColorRow from "../components/PaletteColorRow";
 import RecordButton from "../components/RecordButton";
-import { useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
+import {
+  useCanvasRecorder,
+  type RecordTimeline,
+} from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -81,6 +84,11 @@ const BG = "#F5F5F2";
 // needed for the usual view. Generated into public/ as a static asset.
 const SNAPSHOT_URL = snapshotUrl;
 
+// How much ground a fetch pulls in around the geocoded centre. Settled and
+// locked, so it has no slider: framing is the zoom's job, and it works on the
+// data already downloaded rather than going back to Overpass for it.
+const RADIUS_KM = 4;
+
 // Linework collapsed into three clean weight tiers (major / collector /
 // minor) so the network reads as an organised hierarchy rather than a finely
 // graded heat-map of widths.
@@ -99,10 +107,19 @@ const WEIGHT: Record<Designation, number> = {
 
 const INK = "#C0B663";
 
-const STAMP_TIP =
-  "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.";
-const CUTOUT_TIP =
-  "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.";
+// Ink treatment — the same stamp/cutout render pass the rest of the tool family
+// runs, dialled in against the reference and locked, so it has no sliders. The
+// stamp fuses the junctions so the grid reads as drawn rather than plotted, and
+// the cutout pinches the thinnest runs into breaks.
+const STAMP = 0.4;
+const CUTOUT = 0.29;
+
+// Roads thin from dense to sparse toward the bottom — settled and locked, so it
+// has no toggle.
+const FADE = true;
+
+// Default line-weight multiplier for the three designation tiers below.
+const LINE_WEIGHT = 0.8;
 
 // Designations dropped when "hide highways" is on, plus OSM arterials (see core).
 const HIGHWAY_TIER: Designation[] = ["I-", "US Hwy", "State Hwy", "Hwy"];
@@ -141,16 +158,9 @@ export default function RoadColors({
     ROAD_BASE,
   );
 
-  const [weight, setWeight] = useState(1.1);
+  const [weight, setWeight] = useState(LINE_WEIGHT);
   const [bg, setBg] = useState(BG);
   const [ink, setInk] = useState(INK);
-  const [fade, setFade] = useState(true);
-  // Ink treatment — the same stamp/cutout render pass the rest of the tool
-  // family runs. A light stamp by default: it fuses the junctions so the grid
-  // reads as drawn rather than plotted. Cutout stays off — the street grid is
-  // already a mesh of short segments and breaking it just erodes the map.
-  const [stamp, setStamp] = useState(0.27);
-  const [cutout, setCutout] = useState(0);
   // Treatment render quality: dropped while sliders scrub, 1 at rest.
   const qualityRef = useRef(1);
   const settleTimer = useRef<number | undefined>(undefined);
@@ -159,7 +169,6 @@ export default function RoadColors({
   // Location the roads are fetched around. Default matches the bundled snapshot
   // loaded on first open; typing a new place fetches it live from Overpass.
   const [place, setPlace] = useState("San Francisco, California");
-  const [radiusKm, setRadiusKm] = useState(4);
 
   // View transform — zoom about the centre + placement. Decoupled from the
   // fetch radius, so zooming never re-downloads.
@@ -173,8 +182,9 @@ export default function RoadColors({
   const colorFor = useCallback(() => safeColor(ink, INK), [ink]);
 
   const stampOpts = useMemo(
-    () => stampOptsForStroke({ stamp, cutout, lineWidth: weight }),
-    [stamp, cutout, weight],
+    () =>
+      stampOptsForStroke({ stamp: STAMP, cutout: CUTOUT, lineWidth: weight }),
+    [weight],
   );
 
   // Scrub with untreated draft linework so slider drags stay fluid; settle
@@ -263,7 +273,7 @@ export default function RoadColors({
       tctx.lineCap = "round";
       tctx.lineJoin = "round";
       const proj = makeProjector(d.center, d.radius, w, h, view);
-      const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
+      const fieldFade = FADE ? makeFade(w, h, { seed: 7 }) : null;
       const n = Math.min(count, ordered.length);
       for (let ri = 0; ri < n; ri++) {
         const way = ordered[ri];
@@ -274,15 +284,18 @@ export default function RoadColors({
           1,
           fieldFade
             ? {
-                keep: (x: number, y: number) => fieldFade.keep(wayKey(way), x, y),
-                alpha: (x: number, y: number) => fieldFade.alpha(wayKey(way), x, y),
-                width: (x: number, y: number) => fieldFade.width(wayKey(way), x, y),
+                keep: (x: number, y: number) =>
+                  fieldFade.keep(wayKey(way), x, y),
+                alpha: (x: number, y: number) =>
+                  fieldFade.alpha(wayKey(way), x, y),
+                width: (x: number, y: number) =>
+                  fieldFade.width(wayKey(way), x, y),
               }
             : null,
         );
       }
     },
-    [w, h, view, fade, drawWay],
+    [w, h, view, drawWay],
   );
 
   // Paint one complete frame. Geometry is always laid out at PREVIEW
@@ -343,7 +356,7 @@ export default function RoadColors({
       const ordered = orderWays(d, keepWay);
       roadsDrawnRef.current = 0;
 
-      const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
+      const fieldFade = FADE ? makeFade(w, h, { seed: 7 }) : null;
       const frames = Math.max(1, Math.round(FILL_IN_SEC * 60));
       const perFrame = Math.max(1, Math.ceil(ordered.length / frames));
       let i = 0;
@@ -375,7 +388,7 @@ export default function RoadColors({
       };
       step();
     },
-    [w, h, bg, prepare, drawWay, view, keepWay, fade],
+    [w, h, bg, prepare, drawWay, view, keepWay],
   );
 
   // Instant, un-animated redraw — used for color / weight / background / size
@@ -442,7 +455,7 @@ export default function RoadColors({
     if (d) renderStatic(d);
     // settleTick re-runs the draw with the full treatment after scrubbing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, bg, view, ink, fade, w, h, animating, stamp, cutout, settleTick]);
+  }, [weight, bg, view, ink, w, h, animating, settleTick]);
 
   // Load the saved Bay Area snapshot (no network round-trip to Overpass).
   const loadSaved = useCallback(async () => {
@@ -481,7 +494,13 @@ export default function RoadColors({
         kind: "loading",
         msg: `Fetching roads near ${g.label.split(",")[0]}…`,
       });
-      const d = await fetchRoads(g.lat, g.lon, radiusKm * 1000, g.label, ac.signal);
+      const d = await fetchRoads(
+        g.lat,
+        g.lon,
+        RADIUS_KM * 1000,
+        g.label,
+        ac.signal,
+      );
       if (ac.signal.aborted) return;
       setPlacement(DEFAULT_PLACEMENT);
       setData(d);
@@ -493,7 +512,7 @@ export default function RoadColors({
         msg: (e as Error).message || "Couldn't load that place.",
       });
     }
-  }, [place, radiusKm]);
+  }, [place]);
 
   // Replay the fill-in animation on the current data.
   const grow = useCallback(() => {
@@ -525,19 +544,33 @@ export default function RoadColors({
     };
   }, [renderFrame, exportDims, pxScale, bg, stampOpts]);
 
+  // Fill-in as a seekable timeline: frame `t` shows the first `t × total` ways.
+  const recordTimeline = useCallback((): RecordTimeline | null => {
+    const d = dataRef.current;
+    if (!d) return null;
+    const total = orderWays(d, keepWay).length;
+    return {
+      durationMs: FILL_IN_SEC * 1000,
+      seek: (t) => {
+        roadsDrawnRef.current = Math.round(t * total);
+      },
+      onFinish: () => {
+        roadsDrawnRef.current = total;
+      },
+    };
+  }, [keepWay]);
+
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
     `map-${recordName}`,
     getExportRender,
+    recordTimeline,
   );
 
-  const startRecord = () => {
-    if (dataRef.current) animate(dataRef.current);
-    recorder.start();
-  };
+  // The recorder walks the fill-in itself at a fixed step, so the on-screen
+  // animation doesn't need to run (and can't skew the captured frames).
+  const startRecord = () => recorder.start();
   const stopRecord = () => recorder.stop();
-
-  useStopRecordWhenAnimatingEnds(recorder.recording, animating, recorder.stop);
 
   useEffect(() => {
     if (recorder.recording) return;
@@ -572,8 +605,7 @@ export default function RoadColors({
   );
 
   const setZoom = useCallback(
-    (z: number) =>
-      setPlacement((p) => ({ ...p, zoom: clamp(z, 1, MAX_ZOOM) })),
+    (z: number) => setPlacement((p) => ({ ...p, zoom: clamp(z, 1, MAX_ZOOM) })),
     [],
   );
   const setOffX = useCallback(
@@ -686,7 +718,7 @@ export default function RoadColors({
     }
 
     const proj = makeProjector(data.center, data.radius, w, h, view);
-    const fieldFade = fade ? makeFade(w, h, { seed: 7 }) : null;
+    const fieldFade = FADE ? makeFade(w, h, { seed: 7 }) : null;
     const f = (n: number) => Math.round(n * 100) / 100;
     let body = "";
     for (const designation of REVEAL_ORDER) {
@@ -703,9 +735,12 @@ export default function RoadColors({
           }
           const fadeOpts = fieldFade
             ? {
-                keep: (x: number, y: number) => fieldFade.keep(wayKey(wy), x, y),
-                alpha: (x: number, y: number) => fieldFade.alpha(wayKey(wy), x, y),
-                width: (x: number, y: number) => fieldFade.width(wayKey(wy), x, y),
+                keep: (x: number, y: number) =>
+                  fieldFade.keep(wayKey(wy), x, y),
+                alpha: (x: number, y: number) =>
+                  fieldFade.alpha(wayKey(wy), x, y),
+                width: (x: number, y: number) =>
+                  fieldFade.width(wayKey(wy), x, y),
               }
             : null;
           return svgFadedPaths(pts, strokeFor(designation), fadeOpts, f);
@@ -714,7 +749,10 @@ export default function RoadColors({
       if (paths)
         body += `<g stroke="${stroke}" fill="none" stroke-linecap="round" stroke-linejoin="round">${paths}</g>`;
     }
-    download(new Blob([`${head}${body}</svg>`], { type: "image/svg+xml" }), "svg");
+    download(
+      new Blob([`${head}${body}</svg>`], { type: "image/svg+xml" }),
+      "svg",
+    );
   };
 
   const slider = (
@@ -784,9 +822,6 @@ export default function RoadColors({
               font: "inherit",
             }}
           />
-          <div className="specimen-tree__sliders">
-            {slider("Radius", radiusKm, 1, 15, 0.5, setRadiusKm, " km")}
-          </div>
           <button
             type="submit"
             className="btn"
@@ -800,7 +835,11 @@ export default function RoadColors({
 
       <div className="specimen-tree__group">
         <span className="specimen-tree__group-title">Canvas</span>
-        <AspectRatioControl value={config} onChange={setConfig} disabled={loading} />
+        <AspectRatioControl
+          value={config}
+          onChange={setConfig}
+          disabled={loading}
+        />
       </div>
 
       <div className="specimen-tree__group">
@@ -840,48 +879,8 @@ export default function RoadColors({
       </div>
 
       <div className="specimen-tree__group">
-        <label
-          className="tool-param-row has-tip"
-          data-tip="Thin the roads from dense to sparse toward the bottom"
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <span className="tool-param-row__label">Fade</span>
-          <span className={`toggle-switch${fade ? " is-on" : ""}`}>
-            <input
-              type="checkbox"
-              checked={fade}
-              onChange={(e) => setFade(e.target.checked)}
-              disabled={!data}
-              style={{
-                position: "absolute",
-                opacity: 0,
-                inset: 0,
-                cursor: "pointer",
-              }}
-              aria-label="Toggle fade"
-            />
-            <span className="toggle-switch__track" />
-            <span className="toggle-switch__thumb" />
-          </span>
-        </label>
         <div className="specimen-tree__sliders">
-          {slider("Line Weight", weight, 0.3, 3, 0.1, scrubbed(setWeight))}
-          {slider("Stamp", stamp, 0, 0.45, 0.01, scrubbed(setStamp), "", STAMP_TIP)}
-          {slider(
-            "Line Breaks",
-            cutout,
-            0,
-            1,
-            0.01,
-            scrubbed(setCutout),
-            "",
-            CUTOUT_TIP,
-          )}
+          {slider("Line Weight", weight, 0.3, 3, 0.01, scrubbed(setWeight))}
         </div>
         <PaletteColorRow label="Stroke Color" value={ink} onChange={setInk} />
       </div>
@@ -907,6 +906,7 @@ export default function RoadColors({
         />
         <RecordButton
           recording={recorder.recording}
+          progress={recorder.progress}
           supported={recorder.supported}
           disabled={!data || animating}
           onStart={startRecord}
@@ -941,9 +941,7 @@ export default function RoadColors({
         </p>
       )}
       {loading && (
-        <p style={{ fontSize: 13, margin: 0, opacity: 0.7 }}>
-          {status.msg}
-        </p>
+        <p style={{ fontSize: 13, margin: 0, opacity: 0.7 }}>{status.msg}</p>
       )}
     </>
   );

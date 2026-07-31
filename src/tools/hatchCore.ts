@@ -36,8 +36,9 @@ export interface HatchParams {
 
 // The mat's structure is fixed, not dialled: cluster spacing, stick length,
 // heading count and the shape of the bundle are what make this read as
-// Financial Services, so they're set here and kept off the rail. Seed, Line
-// Weight and Line Breaks are the ones left to play with.
+// Financial Services, so they're set here and kept off the rail. Line Breaks
+// is fixed at 0.81 — just enough cutout to nick the ink where sticks cross.
+// Seed and Line Weight are the ones left to play with.
 export const DEFAULT_HATCH: HatchParams = {
   seed: 44425,
   spacing: 40,
@@ -77,7 +78,7 @@ export const HATCH_RANGES: Record<keyof HatchParams, [number, number, number]> =
     bundle: [1, 5, 1],
     gap: [3, 28, 0.5],
     jitter: [0, 1, 0.05],
-    lineWidth: [0.3, 4, 0.1],
+    lineWidth: [0.3, 4, 0.01],
     widthVar: [0, 0.6, 0.02],
     stamp: [0, 0.45, 0.01],
     cutout: [0, 1, 0.01],
@@ -125,7 +126,6 @@ export const HATCH_HINTS: Record<keyof HatchParams, string> = {
 export const SLIDER_KEYS_SIMPLE_HATCH: (keyof HatchParams)[] = [
   "seed",
   "lineWidth",
-  "cutout",
 ];
 
 export interface HatchLine {

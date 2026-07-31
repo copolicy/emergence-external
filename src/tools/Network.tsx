@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
 import ToolRailControls from "../components/ToolRailControls";
-import { useAnimProgress, useCanvasRecorder, useStopRecordWhenAnimatingEnds } from "../hooks/useCanvasRecorder";
+import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -107,7 +107,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
     const tick = (t: number) => {
       if (!start) start = t;
       const p = Math.min(1, (t - start) / GROWTH_MS);
-      setGrowth(1 - (1 - p) * (1 - p));
+      setGrowth(easeGrowth(p));
       if (p < 1) raf = requestAnimationFrame(tick);
       else setGrowing(false);
     };
@@ -162,21 +162,19 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
     ],
   );
 
+  const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
     `network-${params.seed}`,
     getExportRender,
+    recordTimeline,
   );
 
-  const startRecord = () => {
-    growthRef.current = 0;
-    setGrowth(0);
-    setGrowing(true);
-    recorder.start();
-  };
+  // The recorder replays the growth on its own fixed-step clock and stops
+  // itself at the end — the live animation stays out of the way so the two
+  // aren't both writing `growthRef`.
+  const startRecord = () => recorder.start();
   const stopRecord = () => recorder.stop();
-
-  useStopRecordWhenAnimatingEnds(recorder.recording, growing, recorder.stop);
 
   useEffect(() => {
     if (recorder.recording) return;
@@ -314,6 +312,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
       onSVG={downloadSVG}
       exportDisabled={!result.lines.length}
       recording={recorder.recording}
+      recordProgress={recorder.progress}
       recordSupported={recorder.supported}
       onStartRecord={startRecord}
       onStopRecord={stopRecord}

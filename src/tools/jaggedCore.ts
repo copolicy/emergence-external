@@ -16,16 +16,72 @@ import {
   type FlowLine,
   type FlowParams,
 } from "./flowFieldCore";
+import type { FadeOptions } from "./dissolveFade";
 
-// Infrastructure — PCB trace routing. Bundles of parallel conductors run only
-// straight up, down, left or right — never on the diagonal — and change heading
-// on square corners cut back into
-// deep 45° mitres, the setback stepped per lane so the whole bundle stays
-// parallel through the turn: the innermost lane cuts almost square, the outermost
-// carries a long diagonal face. Every bundle holds a constant clearance from the
-// lanes already laid down, and where one runs out of room it simply stops —
-// which is where the blunt stubs and combed fringes come from, biased downward by
-// `drop` so the board frays along its underside the way a real cable run does.
+// A much lighter dissolve than the shared default, which was tuned for fields of
+// soft vectors running the full height. This board is the opposite: hard-edged
+// cable of even weight, whose ends are already deliberate — the fringe and the
+// trail ticks do the work of stopping a trace. The default's taper runs over the
+// last 28% of each line's depth, which on a cut around 0.9 of the height began
+// thinning cable from two thirds of the way up, and carried the ends to nothing so
+// the blunt stops it had been at pains to place dissolved into wisps.
+//
+// So: only the last tenth of the frame may end a line, the taper is an edge
+// treatment rather than a wash, and a tip keeps enough weight to still read as a
+// cut trace.
+const JAGGED_FADE: FadeOptions = {
+  start: 0.9,
+  floor: 0.99,
+  tipFrac: 0.07,
+  endWidth: 0.3,
+  endAlpha: 0.3,
+};
+
+// The trail ticks below a curtain run from about a pitch and a half down to a
+// couple of pixels, and `strokeFaded` drops any stroke under ten by default —
+// which culled all but the first tick or two of every trail, wherever on the board
+// it sat and whether the fade reached it or not. They are deliberate marks, so the
+// floor only needs to be low enough to keep them.
+const JAGGED_FADE_MIN_LEN = 1.5;
+
+// Infrastructure — PCB trace routing, under two rules the reference art holds to
+// without exception:
+//
+//   1. Every leg runs on a multiple of 45° — the eight compass headings and
+//      nothing else. Turns are rounded, but a fillet is only the transition
+//      between two legs; it never leaves the routing on an off-grid heading.
+//   2. No line ever crosses another.
+//
+// Rule 1 is structural. A bundle's centre line is walked on the Manhattan grid,
+// then every square corner is cut back into a 45° diagonal *before* the lanes are
+// offset off it. That order is the whole trick: the centre line becomes
+// octilinear, and the parallel copy of an octilinear path holds full pitch along
+// the diagonal just as it does along a straight. Cutting the chamfer into each
+// lane afterwards instead spaces the diagonals at `pitch·cos(φ/2)`, so the ribbon
+// narrows through every turn. Each 45° turn is then filleted, the radius stepped
+// per lane so the bundle stays concentric through it: the lane inside the turn
+// rides tighter, the lane outside sweeps wider, and the pitch holds all the way
+// round.
+//
+// Rule 2 is enforced twice over. The occupancy grid keeps every bundle a clearance
+// off the ink already on the board, and `firstCrossLen` catches what a grid of
+// committed ink cannot see — a lane crossing the rest of its own ribbon, or its
+// own earlier course where an offset taken deep inside a spiral closes on itself.
+// A lane that meets either simply stops.
+//
+// Where those stops are allowed to happen is what makes the difference between a
+// board that reads as dense routing and one that reads as broken routing. The
+// reference is not short of blunt ends — it is short of blunt ends pointing
+// *sideways*; nearly all of its interior ends hang downward, where the curtain
+// frays. So a lane may stop against ink while heading down, and a bundle holding
+// any lane that stops otherwise is abandoned and the attempt spent elsewhere.
+//
+// That refusal is expensive, and what pays for it is nesting. A ribbon stacked onto
+// a spine already routed runs parallel to that cable at one clearance and so
+// survives intact, where a ribbon carving a fresh path across a busy board is
+// mostly refused — which is why `nest` runs high, why a fresh spine is laid out
+// with room for the whole cable it may come to carry rather than for its first
+// ribbon, and why the attempt budget is many times the bundle count.
 export const JW = FW;
 export const JH = FH;
 // Own colours rather than the flow field's — Infrastructure reverses out to
@@ -39,8 +95,9 @@ export interface JaggedParams extends FlowParams {
   ribbonVar: number; // 0..1 how far narrower bundles fall short of `traces`
   run: number; // mean straight run between corners, px
   turns: number; // max corners a bundle takes before it leaves the board
-  corner: number; // turn radius on the bundle's centre line, px (0 = square)
-  facets: number; // straight faces per corner — 1 is a plain 45° mitre, more step it round
+  corner: number; // 45° cut taken off each leg at a square corner, px (0 = square)
+  knee: number; // fillet radius where a diagonal meets a straight, px (0 = sharp)
+  facets: number; // straight faces per fillet — 1 nicks the knee, high counts read as an arc
   curl: number; // 0..1 how strongly a bundle keeps turning the same way
   switchback: number; // 0..1 how often a turn becomes a 180° U instead of one corner
   margin: number; // 0..1 keep-out down the left edge, widening toward the bottom
@@ -61,37 +118,54 @@ export const DEFAULT_JAGGED: JaggedParams = {
   spacing: 11,
   lineWidth: 2,
   widthVar: 0,
-  // Off by default: the fatten pass spreads each lane toward its neighbours, and
-  // there is only about `spacing - lineWidth` of gap to give away before a ribbon
-  // closes into a solid band. Exposed as a slider because that fusing is a usable
-  // effect, not only a failure mode.
-  stamp: 0,
-  // A leg can only carry a mitre half its own length, so the deeper the bevel the
-  // less a run may vary before the outer lanes start clamping and the bundle stops
-  // being parallel through the turn. Keep the variance modest at this depth.
+  // Barely on. The fatten pass spreads each lane toward its neighbours, and there
+  // is only about `spacing - lineWidth` of gap to give away before a ribbon closes
+  // into a solid band — so this is set just far enough to take the mechanical edge
+  // off the ink without the lanes reaching each other.
+  stamp: 0.03,
+  // A leg carries a chamfer at each end, so the deeper the cut the less a run may
+  // vary before the corners start clamping. Keep the variance modest at this depth.
   jitter: 0.3,
   bundles: 45,
-  traces: 9,
+  traces: 3,
   ribbonVar: 0.5,
-  // Sits under the floor that the deepest lane's two mitres impose at this pitch,
-  // width and corner radius — `2·(corner + halfSpan) + 2·gap`, about 212px here —
-  // so legs come out at that floor and Run Variance only ever lengthens them.
-  // Raise `run` past the floor before reaching for Run Variance.
-  run: 170,
+  // Sits above the floor the chamfers impose at this depth — `2·corner + 2·gap` —
+  // so legs come out clear of it and Run Variance only ever lengthens them. Long
+  // runs are what leave a straight either side of each chamfer.
+  run: 230,
   turns: 14,
-  // Deep enough that the mitre on the outer lanes reads as a long 45° face rather
-  // than a nicked corner, which is what makes the bundles turn like routed copper.
-  corner: 40,
-  facets: 2,
+  // Deep enough that the diagonal reads as a leg the bundle travels along rather
+  // than a nick taken off the corner, which is what makes the routing read as
+  // copper: long straights, long 45° runs, and a turn between them.
+  corner: 78,
+  // Small against the chamfer, so the diagonal stays straight through its middle
+  // and only rounds where it meets the straight. Stepping this per lane runs the
+  // family from a tight knee on the inside of the turn to a long sweep on the
+  // outside, which is what a concentric bundle does.
+  //
+  // These three — `corner`, `knee` and `run` — were set together against the
+  // reference art, matched on how its ink divides between the straights, the 45°
+  // runs and the rounding: about 71% axial, 21% diagonal, 8% fillet. Moving one
+  // alone pulls that split off.
+  knee: 12,
+  // High enough that a fillet reads as a drawn arc rather than a stepped bevel.
+  facets: 8,
   // Not on the rail: how tightly the bundles coil is the vertical's look, not
   // something to tune per composition.
   curl: 0.45,
   switchback: 0.45,
   margin: 0.6,
-  nest: 0.5,
+  // High, because stacking ribbons onto a spine already down is how the board
+  // reaches its density without lanes running into each other: a ribbon nesting
+  // alongside cable runs parallel to it at one clearance, where one carving a
+  // fresh path across a busy board mostly gets refused. It is also what builds the
+  // reference's thick cables out of narrow ribbons.
+  nest: 0.8,
   settle: 0.55,
   fringe: 0.35,
-  cutout: 0.82,
+  // A fraction of the ink's own weight, so it stays a nick in the trace at this
+  // line width rather than eroding lanes away.
+  cutout: 0.74,
   drop: 0.8,
   // Around three dashes past each blunt end, shortening as they go. Only lanes that
   // stopped heading straight down and with clear board below get any, so this reads
@@ -107,10 +181,11 @@ export const JAGGED_RANGES: Record<
   bundles: [2, 80, 1],
   traces: [1, 16, 1],
   ribbonVar: [0, 1, 0.02],
-  run: [20, 260, 5],
+  run: [20, 340, 5],
   turns: [1, 16, 1],
-  corner: [0, 80, 1],
-  facets: [1, 10, 1],
+  corner: [0, 120, 1],
+  knee: [0, 60, 1],
+  facets: [1, 16, 1],
   curl: [0, 1, 0.02],
   switchback: [0, 1, 0.02],
   margin: [0, 1, 0.02],
@@ -131,8 +206,9 @@ export const JAGGED_LABELS: Record<keyof JaggedParams, string> = {
   ribbonVar: "Ribbon Var",
   run: "Run Length",
   turns: "Corners",
-  corner: "Corner Radius",
-  facets: "Corner Steps",
+  corner: "Corner Cut",
+  knee: "Knee Radius",
+  facets: "Knee Steps",
   curl: "Curl",
   switchback: "Switchback",
   margin: "Left Margin",
@@ -153,8 +229,9 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
   ribbonVar: "How much bundles vary in width. Zero makes every ribbon the same; higher mixes fat cable with thin.",
   run: "Average straight distance a bundle travels between corners.",
   turns: "How many corners a bundle takes before it runs off the board. Low values give long sweeping lanes.",
-  corner: "Turn radius measured on the bundle's centre line. Lanes inside the turn ride tighter, lanes outside sweep wider — so the whole bundle stays parallel. Zero gives square corners.",
-  facets: "How many straight faces a corner is cut into. One is the single 45° mitre of board layout; two or three step the turn round in stages; high counts read as a smooth arc.",
+  corner: "How far back a square corner is cut into a 45° diagonal, measured along each leg on the bundle's centre line. The cut is made before the lanes are offset, so the diagonal is a leg the whole bundle travels along at full pitch. High values turn the routing into long diagonals; zero gives square corners.",
+  knee: "Radius of the arc where a diagonal meets a straight. Stepped per lane — lanes inside the turn ride tighter, lanes outside sweep wider — so the bundle stays concentric through the turn. Zero leaves the knee sharp; large values eat the diagonal until the corner reads as one continuous curve.",
+  facets: "How finely each knee arc is stepped. Counted per knee-radius of arc rather than per fillet, so a wide outer sweep is stepped as smoothly as a tight inner knee instead of flattening into a polygon. One gives a single bevel across a tight knee; high counts read as a smoothly drawn arc.",
   curl: "How strongly a bundle keeps turning the same way. High values coil it into nested corners; zero wanders.",
   switchback: "How often a turn doubles into a 180° U — out, across, and back — instead of a single corner. This is what builds the nested hooks.",
   margin:
@@ -170,17 +247,16 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
 
 // The only sliders exposed in the UI. Every other param stays at its default —
 // `bundles`, `ribbonVar`, `switchback`, `nest`, `settle` and `drop` set the
-// board's character rather than tune a composition, and so now do the routing
-// dimensions `margin`, `spacing`, `run`, `turns`, `corner`, `facets`, `fringe` and
-// `trail`: the geometry of the board is settled, and what is left on the rail is how
-// it is inked. They are dialled in above and left alone. Move one back into this
-// list if it turns out to need reaching for.
+// board's character rather than tune a composition, and so do the routing
+// dimensions `margin`, `spacing`, `run`, `turns`, `corner`, `knee`, `facets`,
+// `fringe` and `trail`, and now the ink treatment `stamp` and `cutout` too: the
+// board is settled, and what is left on the rail is which one you get and how
+// heavily it is drawn. They are dialled in above and left alone. Move one back
+// into this list if it turns out to need reaching for.
 export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
   "seed",
   "traces",
   "lineWidth",
-  "stamp",
-  "cutout",
 ];
 
 // ---- geometry helpers ------------------------------------------------------
@@ -191,9 +267,9 @@ export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
 const SETTLE_REACH = 0.62;
 
 // The four Manhattan directions, `d` counting clockwise from +x with y pointing
-// down, so a 90° turn is ±1 step and a reversal ±2. Legs are axis-aligned and
-// nothing else: the only 45° on the board comes from the mitres `facetCorners`
-// cuts into each corner, never from a leg that travels diagonally.
+// down, so a 90° turn is ±1 step and a reversal ±2. The walk itself is
+// axis-aligned; the diagonals come from `chamferSpine`, which cuts each of these
+// square corners into a 45° leg afterwards.
 //
 // Capping every turn at 90° is also what keeps `offsetPath` well behaved. Its
 // mitre divides by `1 + n₁·n₂`, which collapses toward zero as a turn approaches
@@ -341,8 +417,11 @@ function buildSpine(
   const quantRun = (len: number) =>
     Math.max(pitch, Math.round(len / pitch) * pitch);
 
-  // Most bundles enter from an edge heading inward; a few start mid-board so the
-  // interior still fills in once the borders are crowded.
+  // Almost every bundle enters from an edge heading inward. A start in open board
+  // leaves a blunt end there pointing whichever way the bundle set off, and the
+  // reference has very few of those — its cable comes in off an edge and the ends
+  // it does show in the interior are the curtain, hanging down. Kept non-zero
+  // because a handful still help the middle fill in once the borders are crowded.
   //
   // Entry is weighted toward the top and right so bundles travel down and left,
   // which is the direction the composition resolves in. Entering uniformly sends
@@ -353,7 +432,7 @@ function buildSpine(
   let d = edge; // left→+x, top→+y, right→−x, bottom→−y
   let x: number;
   let y: number;
-  if (rand() < 0.7) {
+  if (rand() < 0.9) {
     if (edge === 0) {
       x = -pad;
       y = quant(rand() * h);
@@ -384,13 +463,24 @@ function buildSpine(
   // orthogonal so the U actually closes.
   let pairLeft = 0;
   const cross = minRun + pitch * 2;
+  // The leg a bundle comes in on carries a chamfer at its far end only, so it
+  // needs none of the clearance an interior leg does — that allowance is there so
+  // a cable can turn back without meeting itself, and there is nothing behind the
+  // entry to meet. Held to the full `minRun` it ringed the board with straight
+  // runs, every cable travelling a good way in before it turned anything; the
+  // reference starts turning close to the edge it came in on.
+  const entryFloor = quantRun(p.corner + pitch * 2);
 
   for (let i = 0; i < corners; i++) {
     const vary = 1 + (rand() - 0.5) * 2 * Math.min(1, p.jitter);
-    // A bundle cannot turn back inside its own width, so no run is shorter
-    // than the bundle is wide — the same constraint a real board layout has.
+    // A bundle cannot turn back inside its own width, so no interior run is
+    // shorter than the cable is wide — the same constraint a real board has.
     const len =
-      pairLeft > 0 ? quantRun(cross) : Math.max(minRun, quantRun(p.run * vary));
+      pairLeft > 0
+        ? quantRun(cross)
+        : i === 0
+          ? Math.max(entryFloor, quantRun(p.run * vary * 0.45))
+          : Math.max(minRun, quantRun(p.run * vary));
     x += DX[d] * len;
     y += DY[d] * len;
     v.push(x, y);
@@ -488,6 +578,58 @@ function trimSelfCrossing(v: number[], minSep: number, step: number): number[] {
   return v;
 }
 
+/**
+ * Cut each square corner of the centre line back into a 45° diagonal, replacing
+ * the corner vertex with the two ends of the cut. The spine comes out octilinear —
+ * only the eight compass headings, and every turn 45°.
+ *
+ * This runs *before* `offsetPath`, and that is the point. A parallel copy of an
+ * octilinear path sits at full pitch along the diagonal exactly as it does along a
+ * straight, so the ribbon keeps its width through the turn. Cutting the same
+ * chamfer into each lane after offsetting instead spaces the diagonals at
+ * `pitch·cos(φ/2)` and the bundle visibly narrows across every corner.
+ *
+ * `depth` is measured along each leg. A leg is shared by the corners at both its
+ * ends, so neither may claim more than half of it, less the straight remnant
+ * `gap` they have to leave between them.
+ */
+function chamferSpine(v: number[], depth: number, gap: number): number[] {
+  const n = v.length / 2;
+  if (n < 3 || depth <= 0) return v.slice();
+  const out: number[] = [v[0], v[1]];
+  for (let i = 1; i < n - 1; i++) {
+    const px = v[(i - 1) * 2];
+    const py = v[(i - 1) * 2 + 1];
+    const cx = v[i * 2];
+    const cy = v[i * 2 + 1];
+    const qx = v[(i + 1) * 2];
+    const qy = v[(i + 1) * 2 + 1];
+    const l1 = Math.hypot(cx - px, cy - py);
+    const l2 = Math.hypot(qx - cx, qy - cy);
+    if (l1 < 1e-6 || l2 < 1e-6) {
+      out.push(cx, cy);
+      continue;
+    }
+    const ux = (cx - px) / l1;
+    const uy = (cy - py) / l1;
+    const vx = (qx - cx) / l2;
+    const vy = (qy - cy) / l2;
+    // Nothing to cut where the path runs straight through.
+    if (ux * vx + uy * vy > 1 - 1e-9) {
+      out.push(cx, cy);
+      continue;
+    }
+    const d = Math.min(depth, (l1 - gap) / 2, (l2 - gap) / 2);
+    if (d < 0.5) {
+      out.push(cx, cy);
+      continue;
+    }
+    out.push(cx - ux * d, cy - uy * d, cx + vx * d, cy + vy * d);
+  }
+  out.push(v[(n - 1) * 2], v[(n - 1) * 2 + 1]);
+  return out;
+}
+
 /** +1 where the spine turns left at that vertex, -1 right, 0 straight. */
 function spineTurnSigns(v: number[]): number[] {
   const n = v.length / 2;
@@ -506,8 +648,9 @@ function spineTurnSigns(v: number[]): number[] {
 /**
  * Parallel copy of a polyline at signed distance `t` (positive is left of
  * travel). Each corner vertex moves to the miter point `t·(n₁+n₂)/(1+n₁·n₂)`,
- * which at right angles reduces to `t·(n₁+n₂)` — the exact case this routing
- * used to be limited to — and stays exact for the 45° legs too.
+ * which at right angles reduces to `t·(n₁+n₂)` and stays exact for the 45° legs
+ * the chamfer leaves behind. Every segment keeps its heading, so a copy of an
+ * octilinear spine is octilinear too — this is what holds rule 1.
  */
 function offsetPath(v: number[], t: number): number[] {
   const n = v.length / 2;
@@ -553,15 +696,22 @@ function trimReversed(v: number[], off: number[]): number[] {
 }
 
 /**
- * Cut each corner back along both legs. The setback is measured on the centre
- * line and stepped per lane — from `base - sign·t` — so a bundle turns as one
- * parallel family: the lane inside the turn cuts almost square, the lane outside
- * carries a long face, and the pitch between them holds all the way round.
+ * Round every turn of a lane. The spine reaching here has already been chamfered,
+ * so each turn is 45° and the fillet is the knee where a diagonal meets a
+ * straight. This is the rounding the reference art draws its turns with; the legs
+ * either side of it keep their octilinear headings, so rule 1 still holds of the
+ * routing itself.
  *
- * `facets` is how many straight faces the turn is cut into: one gives the single
- * 45° mitre of real board layout, two or three step it round in stages, and a
- * high count reads as a smooth arc. `gap` is the straight remnant every leg must
- * keep between the corners at its two ends.
+ * The radius is measured on the centre line and stepped per lane — `base - sign·t`
+ * — which makes the lanes concentric through the turn: the lane inside rides
+ * tighter, the lane outside sweeps wider, and the pitch between them holds all the
+ * way round. `minR` floors it, for the innermost lanes of a nested stack that the
+ * family would otherwise send negative.
+ *
+ * `facets` is how finely the arc is stepped — one face per knee-radius of arc at
+ * `facets: 1`, so a single bevel across a tight knee, and high counts a drawn arc.
+ * `gap` is the straight remnant every leg must keep between the fillets at its two
+ * ends.
  */
 function facetCorners(
   off: number[],
@@ -570,6 +720,7 @@ function facetCorners(
   t: number,
   facets: number,
   gap: number,
+  minR: number,
 ): number[] {
   const n = off.length / 2;
   if (n < 3 || base <= 0) return off.slice();
@@ -600,13 +751,24 @@ function facetCorners(
       continue;
     }
     const half = Math.tan(phi / 2);
-    let r = Math.max(0, base - s * t);
+    // A lane riding nearer the turn centre than the centre line's own radius
+    // cannot stay concentric with the rest of the stack — that wants a negative
+    // radius — and it is the innermost lanes of a deeply nested bundle that get
+    // there. Left unfloored they came out as bare mitres, on exactly the corners
+    // that sit tightest in the turn and most need the rounding.
+    let r = Math.max(minR, base - s * t);
     let back = r * half;
-    // Every leg is shared by the corner at each end, so a corner may claim at
-    // most *half* of what that leg can spare. Allowing more lets two mitres meet
-    // with no straight between them, and the pair of 45° faces reads as a
-    // spearhead instead of a routed corner.
-    const cap = (Math.min(l1, l2) - gap) / 2;
+    // Every leg is shared by the fillet at each end, so a fillet may claim at
+    // most *half* of what that leg can spare. Allowing more lets two arcs meet
+    // with no straight between them, and the diagonal disappears into a single
+    // continuous curve instead of reading as a leg of its own.
+    //
+    // The `gap` remnant is what protects that, but on a leg shorter than about
+    // twice the gap it leaves nothing at all and the corner came out as a bare
+    // mitre among rounded ones. Below that length there is no straight worth
+    // protecting anyway, so such a leg gives a quarter of itself to each fillet.
+    const shortest = Math.min(l1, l2);
+    const cap = Math.max((shortest - gap) / 2, shortest * 0.25);
     if (back > cap) {
       back = cap;
       r = cap / half;
@@ -621,11 +783,16 @@ function facetCorners(
     const ox = t1x - s * r * uy;
     const oy = t1y + s * r * ux;
     const a1 = Math.atan2(t1y - oy, t1x - ox);
-    // Walk the turn in equal steps around that centre. k=0 and k=facets land
-    // exactly on the two tangent points, so `facets: 1` emits the single straight
-    // face of a plain 45° mitre and needs no special case; 2 or 3 step the corner
-    // round in stages, and a high count reads as a smooth arc.
-    const faces = Math.max(1, Math.round(facets));
+    // `facets` fixes how finely the arc is stepped rather than how many faces it
+    // gets. A bundle nested well off its host spine turns on a radius many times
+    // the knee's own, and holding the count fixed stepped those sweeps in chords
+    // long enough to read as a polygon. Scaling with the radius steps every fillet
+    // on the board at the same chord — one face per knee-radius of arc, at
+    // `facets: 1` — and the cap bounds the point count on the widest sweeps.
+    const faces = Math.max(
+      1,
+      Math.min(64, Math.round(facets * Math.max(1, r / base))),
+    );
     for (let k = 0; k <= faces; k++) {
       const a = a1 + (s * phi * k) / faces;
       out.push(ox + Math.cos(a) * r, oy + Math.sin(a) * r);
@@ -636,6 +803,85 @@ function facetCorners(
 }
 
 /**
+ * Where along `pts` it first crosses one of `others` or its own earlier course,
+ * as an arc length, or Infinity if it stays clear.
+ *
+ * This is rule 2 enforced on the geometry itself. The occupancy grid covers the
+ * bundles already on the board but cannot see the one being built, and within a
+ * bundle the usual guards are not enough: `trimReversed` only catches an offset
+ * segment doubling back on its spine, while an offset taken deep inside a spiral
+ * closes the gap between two arms until they meet with every segment still
+ * holding its heading, so nothing reverses.
+ */
+function firstCrossLen(pts: number[], others: number[][]): number {
+  const segs = pts.length / 2 - 1;
+  let acc = 0;
+  // Parameter along AB where it properly crosses CD, or -1.
+  const hit = (
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number,
+  ) => {
+    const rx = bx - ax;
+    const ry = by - ay;
+    const sx = dx - cx;
+    const sy = dy - cy;
+    const den = rx * sy - ry * sx;
+    if (Math.abs(den) < 1e-12) return -1; // parallel — a lane never overlaps one
+    const u = ((cx - ax) * sy - (cy - ay) * sx) / den;
+    const v = ((cx - ax) * ry - (cy - ay) * rx) / den;
+    return u > 1e-9 && u < 1 - 1e-9 && v > 1e-9 && v < 1 - 1e-9 ? u : -1;
+  };
+
+  for (let i = 0; i < segs; i++) {
+    const ax = pts[i * 2];
+    const ay = pts[i * 2 + 1];
+    const bx = pts[i * 2 + 2];
+    const by = pts[i * 2 + 3];
+    const len = Math.hypot(bx - ax, by - ay);
+    let best = -1;
+    // Its own earlier course. `j + 1 < i` skips the neighbour, which shares a
+    // vertex by construction.
+    for (let j = 0; j + 1 < i; j++) {
+      const u = hit(ax, ay, bx, by, pts[j * 2], pts[j * 2 + 1], pts[j * 2 + 2], pts[j * 2 + 3]);
+      if (u >= 0 && (best < 0 || u < best)) best = u;
+    }
+    for (const o of others) {
+      for (let j = 0; j + 3 < o.length; j += 2) {
+        const u = hit(ax, ay, bx, by, o[j], o[j + 1], o[j + 2], o[j + 3]);
+        if (u >= 0 && (best < 0 || u < best)) best = u;
+      }
+    }
+    if (best >= 0) return acc + best * len;
+    acc += len;
+  }
+  return Infinity;
+}
+
+/** Whether (x, y) lies within `r` of any segment of a polyline. */
+function nearPolyline(pts: number[], x: number, y: number, r: number): boolean {
+  const r2 = r * r;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const ax = pts[i];
+    const ay = pts[i + 1];
+    const dx = pts[i + 2] - ax;
+    const dy = pts[i + 3] - ay;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = x - (ax + dx * t);
+    const ey = y - (ay + dy * t);
+    if (ex * ex + ey * ey <= r2) return true;
+  }
+  return false;
+}
+
+/**
  * Carry a lane on past its blunt end as a run of dashes that shorten and space
  * out as they go, so the trace dissolves into ticks rather than stopping dead.
  *
@@ -643,6 +889,12 @@ function facetCorners(
  * sideways all over the board instead of hanging off its underside. A lane that
  * stopped because it ran into other ink gets nothing: `blocked` is still true
  * just past its end, so the train breaks on the first dash.
+ *
+ * `hitsSibling` covers what `blocked` cannot. The grid handed in here still shows
+ * the board as it stood *before* this bundle landed — deliberately, so a lane's
+ * own fresh ink does not block its own trail — which leaves the rest of the
+ * ribbon invisible to it. A lane fringed short mid-ribbon would then trail
+ * straight across the neighbour that carried on, and that is a crossing.
  */
 function trailDashes(
   pts: number[],
@@ -654,6 +906,7 @@ function trailDashes(
   w: number,
   h: number,
   blocked: (x: number, y: number) => boolean,
+  hitsSibling: (x: number, y: number) => boolean,
 ): FlowLine[] {
   const n = pts.length;
   if (n < 4) return [];
@@ -686,6 +939,11 @@ function trailDashes(
     const ey = y + uy * dash;
     if (ex < 0 || ey < 0 || ex > w || ey > h) break;
     if (blocked(x, y) || blocked(ex, ey)) break;
+    // Midpoint too: a dash is short against the clearance, so testing both ends
+    // and the middle cannot step over a lane lying across it.
+    const mx = (x + ex) / 2;
+    const my = (y + ey) / 2;
+    if (hitsSibling(x, y) || hitsSibling(mx, my) || hitsSibling(ex, ey)) break;
     out.push({ pts: [x, y, ex, ey], w: weight, order, arrow: false });
     x = ex;
     y = ey;
@@ -757,7 +1015,7 @@ export function computeJagged(
   const occ = new Uint8Array(cols * rows);
   const clear = pitch * 0.85;
   const step = Math.max(1.5, pitch * 0.4);
-  // Straight remnant every leg keeps between the mitres at its two ends, so a
+  // Straight remnant every leg keeps between the chamfers at its two ends, so a
   // corner always reads as a cut corner rather than a point.
   const gap = pitch * 2;
 
@@ -823,10 +1081,13 @@ export function computeJagged(
   }
 
   const want = Math.max(1, Math.round(p.bundles));
-  // Generous, because a bundle is thrown away whole if it lands in the keep-out or
-  // if its lanes come out too short to read as conductors. Both rejections are
-  // common, so a tight attempt budget quietly halves the density.
-  const attempts = Math.min(1600, Math.round(want * (16 + 6 * p.margin)));
+  // Very generous, because a bundle is thrown away whole if it lands in the
+  // keep-out, if its lanes come out too short to read as conductors, or if it
+  // could not be laid down substantially intact. That last one rejects most of
+  // what it sees on a board this dense — holding out for cable that fits is
+  // precisely the point — so the budget has to cover the retries or the board
+  // comes out half empty.
+  const attempts = Math.min(6000, Math.round(want * (60 + 20 * p.margin)));
   const widest = Math.max(1, Math.round(p.traces));
   // A lane below this reads as a tick rather than a conductor, and a whole bundle
   // of them reads as a ladder of stray marks. Gate on the individual lane *and* on
@@ -840,13 +1101,20 @@ export function computeJagged(
   const minLane = pitch * 3;
   const minMean = pitch * 9;
   const minTotal = pitch * 24;
+  // How wide a cable may grow. A host spine stops taking further ribbons once its
+  // stack reaches this, so a high `nest` cannot funnel the whole board onto one
+  // spine and leave the rest bare. Set in absolute terms rather than off `traces`,
+  // because it is the width of the finished cable that matters, and the reference
+  // runs cables of about this band whether they are built of narrow ribbons or
+  // wide ones.
+  const stackCap = pitch * 12;
   const lines: FlowLine[] = [];
   let placed = 0;
 
   // Spines already on the board, each tracking the band of lateral offsets its
-  // bundles have used. A nested bundle rides the same spine one clearance
-  // outside that band, so it inherits the host's corners exactly — the radius
-  // family `base - sign·t` just continues outward.
+  // bundles have used. A nested bundle rides the same spine one clearance outside
+  // that band, so it inherits the host's corners exactly — the radius family
+  // `base - sign·t` just continues outward.
   interface Routed {
     spine: number[];
     signs: number[];
@@ -861,23 +1129,37 @@ export function computeJagged(
     // fall short of it — the mix of fat and thin cable the reference runs.
     const count = Math.max(1, Math.round(widest * (1 - p.ribbonVar * rand())));
     const halfSpan = ((count - 1) / 2) * pitch;
-    // Bundle width plus one pitch of clearance — the tightest turn it can make.
-    const minSep = halfSpan * 2 + pitch;
-    // A leg also has to carry a mitre at each end for the *deepest* lane in the
-    // ribbon — `corner + halfSpan` — and still keep a straight between them.
-    // Routing short of this is what makes two mitres merge into a spearhead.
-    const minRun = Math.max(minSep, 2 * (p.corner + halfSpan) + gap * 2);
+    // Clearance a fresh spine is laid out for: not this ribbon's width but the
+    // width of the cable the spine may end up carrying, since nesting stacks
+    // further ribbons onto it up to `stackCap`.
+    //
+    // Sized for the one ribbon, every spine coiled tighter than its finished cable
+    // would be, and the ribbons later stacked around the outside of those coils ran
+    // into each other in the turns. The survival gate then refused them, so cables
+    // never grew thick and the board could not reach the density the reference has.
+    // Laying the spine out for the cable up front is what lets a stack nest all the
+    // way out and stay intact.
+    const minSep = Math.max(halfSpan * 2, stackCap) + pitch;
+    // A leg is shared by the chamfers at both its ends and still has to keep a
+    // straight remnant between them. The fillets need no allowance here: a lane
+    // whose radius will not fit the face it lands on is clamped to fit by
+    // `facetCorners`, which is what keeps the diagonal straight through its middle
+    // however wide the ribbon gets.
+    const minRun = Math.max(minSep, 2 * p.corner + gap * 2);
 
     let host: Routed | null = null;
     let lateral = 0;
     if (routed.length && rand() < p.nest) {
-      const pick = routed[Math.floor(rand() * routed.length)];
-      // A host stops taking neighbours once its stack is a few ribbons deep.
-      // Without that cap, a high `nest` funnels every bundle onto one spine and
-      // the rest of the board goes bare.
-      const cap = (widest * pitch + pitch) * 3;
-      if (pick.hi - pick.lo < cap) {
-        host = pick;
+      // Stacking is how the board reaches its density: a ribbon nesting alongside
+      // cable already down runs parallel to it at one clearance and so survives
+      // intact, where one carving its own path across a full board is usually
+      // refused. So the pick is made among the spines that still have room —
+      // choosing blind and giving up when the pick turned out to be full spent
+      // most of the budget on fresh spines the board then refused, and cables
+      // never grew to their full width.
+      const open = routed.filter((r) => r.hi - r.lo < stackCap);
+      if (open.length) {
+        host = open[Math.floor(rand() * open.length)];
         lateral =
           rand() < 0.5
             ? host.hi + pitch + halfSpan
@@ -889,55 +1171,104 @@ export function computeJagged(
     let turnSigns: number[];
     let base: number;
     if (host) {
-      // The host spine already cleared self-crossing at its own width. A wider
-      // nested bundle can still run its inner lanes out of room, and trimReversed
-      // below cuts those — which reads as a terminated trace, so it stays honest.
+      // The host spine cleared self-crossing at its own width, and a bundle
+      // nesting outside it rides further from that centre line than the clearance
+      // was ever checked for. Its inner lanes can therefore run out of room; the
+      // rule 2 cut below terminates them, which reads as a trace that gave up.
       spine = host.spine;
       turnSigns = host.signs;
       base = host.base;
     } else {
-      spine = trimSelfCrossing(
+      const walk = trimSelfCrossing(
         buildSpine(w, h, p, rand, minRun),
         minSep,
         Math.max(2, pitch),
       );
+      if (walk.length < 6) continue;
+      // Chamfer before offsetting: the lanes are then parallel copies of an
+      // octilinear centre line and hold full pitch along the diagonals.
+      spine = chamferSpine(walk, p.corner, gap);
       if (spine.length < 6) continue;
       turnSigns = spineTurnSigns(spine);
-      base = p.corner;
+      base = p.knee;
     }
 
     const batch: FlowLine[] = [];
     let total = 0;
+    // Lanes that ran into ink while travelling along or across the board rather
+    // than down. Counted before the fringe, which is a deliberate cut rather than
+    // a bundle failing to fit.
+    let sidewaysStops = 0;
 
     for (let k = 0; k < count; k++) {
       const t = lateral + (k - (count - 1) / 2) * pitch;
       const parallel = trimReversed(spine, offsetPath(spine, t));
       if (parallel.length < 4) continue;
-      const cornered = facetCorners(parallel, turnSigns, base, t, p.facets, gap);
+      const cornered = facetCorners(
+        parallel,
+        turnSigns,
+        base,
+        t,
+        p.facets,
+        gap,
+        pitch * 0.4,
+      );
       const onBoard = clipToBoard(cornered, w, h);
       if (onBoard.length < 4) continue;
 
       const cutAt = firstBlockedLen(onBoard, step, blocked);
       let kept = Number.isFinite(cutAt) ? truncateAt(onBoard, cutAt) : onBoard;
+      if (Number.isFinite(cutAt) && kept.length >= 4) {
+        // Which way the lane was travelling where it stopped. Heading down it
+        // reads as the curtain fraying; any other heading leaves a blunt end
+        // pointing into open board, and the bundle is refused below.
+        const n = kept.length;
+        const dx = kept[n - 2] - kept[n - 4];
+        const dy = kept[n - 1] - kept[n - 3];
+        if (dy / (Math.hypot(dx, dy) || 1) < 0.85) sidewaysStops++;
+      }
       // Fringe: a lane that stops short of its neighbours. Drawn per lane so
       // the bundle's ends comb out instead of shearing off flat. `drop` steers
       // the cut into the lane's lowest descending run, so the stub hangs down.
       if (kept.length >= 4 && p.fringe > 0 && rand() < p.fringe) {
         const full = polylineLength(kept);
-        // Only descents in the back half of the lane qualify, so a drip hangs
-        // off the end of the run instead of lopping the lane down to a nub.
-        let drip: Drop | null = null;
-        if (p.drop > 0 && rand() < p.drop) {
-          for (const s of descendingSpans(kept, pitch * 1.5)) {
-            if (s.from < full * 0.4) continue;
-            if (!drip || s.y > drip.y) drip = s; // the lowest drop wins
+        // A lane may only fray where it is already heading down, and only in the
+        // back half of its run so the drip hangs off the end rather than lopping
+        // the lane to a nub. A lane with nowhere to fray keeps its full length:
+        // cutting one mid-way along a horizontal or a diagonal leaves an end
+        // pointing sideways into open board, which reads as a broken trace rather
+        // than as cable that ran out — the reference frays only where its curtain
+        // hangs, and every interior end on it points down.
+        const spans = descendingSpans(kept, pitch * 1.5).filter(
+          (s) => s.from >= full * 0.4,
+        );
+        if (spans.length) {
+          // `drop` steers the fray to the lowest of them. Without it any
+          // qualifying descent will do, and the fraying scatters up the board
+          // instead of hanging off its underside.
+          let drip: Drop = spans[Math.floor(rand() * spans.length)];
+          if (p.drop > 0 && rand() < p.drop) {
+            for (const s of spans) if (s.y > drip.y) drip = s;
           }
+          kept = truncateAt(
+            kept,
+            drip.from + (drip.to - drip.from) * (0.15 + rand() * 0.85),
+          );
         }
-        kept = drip
-          ? truncateAt(kept, drip.from + (drip.to - drip.from) * (0.15 + rand() * 0.85))
-          : truncateAt(kept, full * (0.25 + rand() * 0.6));
       }
       if (kept.length < 4) continue;
+      // Rule 2, applied to the geometry that will actually be inked and to the
+      // one thing the occupancy grid cannot cover — the rest of this bundle. The
+      // lane stops a clearance short of the crossing, so it reads as a terminated
+      // trace like any other lane that ran out of room.
+      const meets = firstCrossLen(
+        kept,
+        batch.map((l) => l.pts),
+      );
+      if (Number.isFinite(meets)) {
+        kept = truncateAt(kept, Math.max(0, meets - clear));
+        if (kept.length < 4) continue;
+      }
       const len = polylineLength(kept);
       if (len < minLane) continue;
 
@@ -954,27 +1285,46 @@ export function computeJagged(
     }
 
     // A ribbon that loses its outer lanes still reads fine — it is just narrower
-    // cable — so this only rules out the degenerate case of one or two loose
-    // strokes sitting at bundle pitch. Demanding most of the ribbon survive
-    // instead starves the board: complete ribbons need long clear corridors, and
-    // holding out for them cost well over half the density.
+    // cable — so the count test only rules out the degenerate case of one or two
+    // loose strokes sitting at bundle pitch.
+    //
+    // The last test is what keeps the board from looking broken, and it is worth
+    // the attempts it costs. The reference is not short of blunt ends; it is short
+    // of blunt ends pointing *sideways*. Nearly all of its interior ends hang
+    // downward, because that is the curtain fraying, and a lane that stops while
+    // heading down reads as cable that ran out. One cut mid-traverse instead leaves
+    // an end pointing into open board with nothing to explain it, and a field of
+    // those is what makes routing look damaged rather than dense.
+    //
+    // Gating instead on how much of a ribbon survived was the wrong test: a long
+    // cable is likely to meet something *somewhere*, so it refused the longest
+    // bundles first and the board could not fill. This refuses the ones that stop
+    // badly, whatever their length. Tolerating even a third of a ribbon stopping
+    // sideways scattered a quarter more such ends over the board for no density.
     const need = Math.min(3, count);
     if (
       batch.length < need ||
       total < minTotal ||
-      total / batch.length < minMean
+      total / batch.length < minMean ||
+      sidewaysStops > 0
     ) {
       continue;
     }
     // Built against the board as it stood *before* this bundle landed, so a lane's
-    // own freshly-marked ink does not block its own trail.
+    // own freshly-marked ink does not block its own trail. The rest of the ribbon,
+    // and the dashes already hung off it, are handed over separately so a trail
+    // cannot cut across them.
     const trails: FlowLine[] = [];
     if (p.trail > 0) {
-      for (const line of batch) {
+      for (let bi = 0; bi < batch.length; bi++) {
+        const siblings = batch
+          .filter((_, i) => i !== bi)
+          .map((l) => l.pts)
+          .concat(trails.map((t) => t.pts));
         trails.push(
           ...trailDashes(
-            line.pts,
-            line.w,
+            batch[bi].pts,
+            batch[bi].w,
             placed,
             pitch,
             p.trail,
@@ -982,6 +1332,7 @@ export function computeJagged(
             w,
             h,
             blocked,
+            (x, y) => siblings.some((o) => nearPolyline(o, x, y, clear)),
           ),
         );
       }
@@ -1050,7 +1401,9 @@ function paintJaggedLines(
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = fade ? "round" : "miter";
 
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade
+    ? makeFade(w, h, { ...JAGGED_FADE, seed: fadeSeed })
+    : null;
 
   const SPREAD = 0.65;
   const denom = 1 - SPREAD;
@@ -1063,6 +1416,7 @@ function paintJaggedLines(
           keep: (x: number, y: number) => fieldFade.keep(id, x, y),
           alpha: (x: number, y: number) => fieldFade.alpha(id, x, y),
           width: (x: number, y: number) => fieldFade.width(id, x, y),
+          minLength: JAGGED_FADE_MIN_LEN,
         }
       : null;
     const local =
@@ -1109,7 +1463,10 @@ export function buildJaggedSVG(
   stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  // Canvas and SVG must share these or the export diverges from the preview.
+  const fieldFade = fade
+    ? makeFade(w, h, { ...JAGGED_FADE, seed: fadeSeed })
+    : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
   ];
@@ -1135,6 +1492,7 @@ export function buildJaggedSVG(
           keep: (x: number, y: number) => fieldFade.keep(id, x, y),
           alpha: (x: number, y: number) => fieldFade.alpha(id, x, y),
           width: (x: number, y: number) => fieldFade.width(id, x, y),
+          minLength: JAGGED_FADE_MIN_LEN,
         }
       : null;
     parts.push(svgFadedPaths(line.pts, line.w, fadeOpts, f));
@@ -1154,11 +1512,14 @@ export function randomJaggedParams(prev: JaggedParams): JaggedParams {
   return {
     ...prev,
     seed: Math.floor(rand() * 99999) + 1,
-    traces: pick(7, 12, 1),
-    run: pick(120, 200, 5),
+    traces: pick(2, 5, 1),
+    run: pick(200, 280, 10),
     turns: pick(10, 16, 1),
-    corner: pick(4, 14, 1),
-    facets: pick(1, 3, 1),
+    // Kept around the dialled-in split of straights, diagonals and rounding, so a
+    // shuffle moves the composition without changing how the routing turns.
+    corner: pick(52, 72, 2),
+    knee: pick(8, 18, 2),
+    facets: pick(6, 10, 1),
     curl: pick(0.14, 0.46, 0.02),
     fringe: pick(0.25, 0.5, 0.02),
     spacing: pick(9, 13, 1),

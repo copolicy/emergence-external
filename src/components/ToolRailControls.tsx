@@ -33,6 +33,7 @@ interface ToolRailControlsProps {
   onSVG: () => void;
   exportDisabled?: boolean;
   recording: boolean;
+  recordProgress?: number;
   recordSupported?: boolean;
   onStartRecord: () => void;
   onStopRecord: () => void;
@@ -66,6 +67,7 @@ export default function ToolRailControls({
   onSVG,
   exportDisabled,
   recording,
+  recordProgress = 0,
   recordSupported = true,
   onStartRecord,
   onStopRecord,
@@ -144,6 +146,7 @@ export default function ToolRailControls({
         />
         <RecordButton
           recording={recording}
+          progress={recordProgress}
           supported={recordSupported}
           onStart={onStartRecord}
           onStop={onStopRecord}

@@ -86,7 +86,12 @@ export const ROOT_RANGES: Record<keyof RootParams, [number, number, number]> = {
   coil: [0, 1, 0.01],
   endThickness: [0.5, 8, 0.1],
   stamp: [0, 0.45, 0.01],
-  cutout: [0, 1, 0.01],
+  // Floored rather than run down to zero, so the pass is always on and the slider
+  // spans how heavily it breaks the ink rather than whether it breaks at all.
+  // Ceiling well short of the full erode: the pass eats a fraction of the ink's
+  // own half-width, and the top of that range takes linework this thin away
+  // altogether rather than nicking it (see CUTOUT_MAX_ERODE in stampTreatment).
+  cutout: [0.15, 0.4, 0.01],
   hairDensity: [0, 1, 0.01],
   bedrockOffset: [0, 0.4, 0.01],
   threshold: [0, 0.6, 0.01],
@@ -135,7 +140,7 @@ export const ROOT_HINTS: Record<keyof RootParams, string> = {
   stamp:
     "Organic brush: ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
   cutout:
-    "Organic brush: cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
+    "Organic brush: cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. The slider bottoms out at a light break rather than at none.",
   hairDensity:
     "Amount of fine root-hair / mycelial threads filling the negative space — the hidden web beneath the structural roots.",
   bedrockOffset:

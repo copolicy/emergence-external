@@ -122,7 +122,7 @@ export const ROOTS_TEXT_RANGES: Record<
   approachReach: [30, 140, 1],
   clearance: [0, 20, 1],
   taprootThickness: [0.5, 3, 0.01],
-  thickness: [0.1, 1.5, 0.05],
+  thickness: [0.1, 1.5, 0.01],
   taper: [0.1, 0.45, 0.01],
   hairDensity: [0, 1, 0.01],
 };

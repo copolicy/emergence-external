@@ -42,7 +42,9 @@ export const DEFAULT_MESH: MeshParams = {
   lineWidth: 0.6,
   // Same treatment defaults as the Root Brush / vertical-card references.
   stamp: 0.34,
-  cutout: 0.47,
+  // Dialled in and locked — no slider, so the pass always breaks the mesh by
+  // this much.
+  cutout: 0.63,
 };
 
 export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
@@ -52,10 +54,14 @@ export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
   fieldScale: [1.5, 10, 0.5],
   fieldX: [-3, 3, 0.05],
   fieldY: [-3, 3, 0.05],
-  lineWidth: [0.3, 2.5, 0.1],
+  lineWidth: [0.3, 2.5, 0.01],
   jitter: [0, 0.5, 0.02],
   stamp: [0, 0.45, 0.01],
-  cutout: [0, 1, 0.01],
+  // Ceiling short of the full erode: the pass eats a fraction of the ink's own
+  // half-width, and a mesh stroke is thin enough that the top of the old range
+  // took the linework away rather than nicking it (see CUTOUT_MAX_ERODE in
+  // stampTreatment).
+  cutout: [0, 0.75, 0.01],
 };
 
 export const MESH_LABELS: Record<keyof MeshParams, string> = {
@@ -88,15 +94,15 @@ export const MESH_HINTS: Record<keyof MeshParams, string> = {
     "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
-// Warp, Density, Jitter and Field Scale are held at their DEFAULT_MESH values —
-// no sliders. Warp X/Y stay on the rail: they only walk the fold around the
-// frame, so they reframe the drape without changing how it's drawn.
+// Warp, Density, Jitter, Field Scale and Line Breaks are held at their
+// DEFAULT_MESH values — no sliders. Warp X/Y stay on the rail: they only walk
+// the fold around the frame, so they reframe the drape without changing how
+// it's drawn.
 export const SLIDER_KEYS_SIMPLE_MESH: (keyof MeshParams)[] = [
   "seed",
   "fieldX",
   "fieldY",
   "lineWidth",
-  "cutout",
 ];
 
 /**

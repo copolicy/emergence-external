@@ -63,7 +63,7 @@ export const SIGNAL_RANGES: Record<
   centers: [1, 12, 1],
   rings: [1, 24, 1],
   spacing: [8, 80, 1],
-  lineWidth: [0.3, 2.5, 0.1],
+  lineWidth: [0.3, 2.5, 0.01],
   breakiness: [0, 0.7, 0.02],
   jitter: [0, 0.25, 0.01],
   stamp: [0, 0.45, 0.01],
