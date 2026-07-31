@@ -9,7 +9,8 @@ import {
 
 // FinTech — a rectangular mesh warped by domain noise. Reads like a flexible
 // data grid draped over an invisible surface: denser than a street map, softer
-// than engineered jag facets.
+// than engineered jag facets. Each row and column is a smooth curve through
+// its warped nodes rather than a chain of straight segments.
 export const MW = 680;
 export const MH = 580;
 export const INK = "#C0B663"; // Gold — matches FinTech vertical card
@@ -161,7 +162,64 @@ function fbm(x: number, y: number, seed: number, octaves: number): number {
   return sum / norm;
 }
 
-/** Build a warped lattice: horizontal + vertical polylines through displaced nodes. */
+/** Catmull-Rom interpolation between p1 and p2, using p0/p3 as handles. */
+function catmullRom(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  t: number,
+): [number, number] {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const x =
+    0.5 *
+    (2 * x1 +
+      (-x0 + x2) * t +
+      (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2 +
+      (-x0 + 3 * x1 - 3 * x2 + x3) * t3);
+  const y =
+    0.5 *
+    (2 * y1 +
+      (-y0 + y2) * t +
+      (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 +
+      (-y0 + 3 * y1 - 3 * y2 + y3) * t3);
+  return [x, y];
+}
+
+/** Densify a knot polyline into a smooth curve that passes through every knot. */
+function smoothPolyline(flat: number[], steps = 4): number[] {
+  const n = flat.length / 2;
+  if (n < 3) return flat.slice();
+
+  const out: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const i0 = Math.max(0, i - 1);
+    const i1 = i;
+    const i2 = i + 1;
+    const i3 = Math.min(n - 1, i + 2);
+    const x0 = flat[i0 * 2];
+    const y0 = flat[i0 * 2 + 1];
+    const x1 = flat[i1 * 2];
+    const y1 = flat[i1 * 2 + 1];
+    const x2 = flat[i2 * 2];
+    const y2 = flat[i2 * 2 + 1];
+    const x3 = flat[i3 * 2];
+    const y3 = flat[i3 * 2 + 1];
+    const start = i === 0 ? 0 : 1;
+    for (let s = start; s <= steps; s++) {
+      const [x, y] = catmullRom(x0, y0, x1, y1, x2, y2, x3, y3, s / steps);
+      out.push(x, y);
+    }
+  }
+  return out;
+}
+
+/** Build a warped lattice: smooth horizontal + vertical curves through displaced nodes. */
 export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
   const cell = Math.max(6, p.spacing);
   const cols = Math.ceil(w / cell) + 2;
@@ -217,24 +275,24 @@ export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
     lines.push({ pts, w: p.lineWidth, order });
   };
 
-  // Horizontal runs
+  // Horizontal runs — Catmull-Rom through each row of warped nodes.
   for (let r = 0; r < rows; r++) {
-    const pts: number[] = [];
+    const knots: number[] = [];
     for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
-      pts.push(xs[i], ys[i]);
+      knots.push(xs[i], ys[i]);
     }
-    pushLine(pts, (r / Math.max(1, rows - 1)) * 0.5);
+    pushLine(smoothPolyline(knots), (r / Math.max(1, rows - 1)) * 0.5);
   }
 
   // Vertical runs
   for (let c = 0; c < cols; c++) {
-    const pts: number[] = [];
+    const knots: number[] = [];
     for (let r = 0; r < rows; r++) {
       const i = r * cols + c;
-      pts.push(xs[i], ys[i]);
+      knots.push(xs[i], ys[i]);
     }
-    pushLine(pts, 0.5 + (c / Math.max(1, cols - 1)) * 0.5);
+    pushLine(smoothPolyline(knots), 0.5 + (c / Math.max(1, cols - 1)) * 0.5);
   }
 
   return lines;

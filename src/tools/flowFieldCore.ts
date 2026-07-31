@@ -215,7 +215,8 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
 
 // The only sliders exposed in the UI. Every other param stays at its default.
 // "density" is line spacing (lower packs the field denser); "line weight" is
-// the stroke width.
+// the stroke width. Stamp and Line Breaks are locked at their tuned defaults —
+// the vertical's ink character stays fixed rather than opened up on the rail.
 export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
   "seed",
   // Direction, swirl, field scale and density are settled: the field is meant
@@ -225,7 +226,6 @@ export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
   // and what breakage there is comes from Line Breaks. All stay at their
   // defaults and off the rail.
   "lineWidth",
-  "cutout",
 ];
 
 

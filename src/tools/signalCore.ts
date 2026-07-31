@@ -100,10 +100,11 @@ export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
     "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
+// Stamp and Line Breaks are locked at their tuned defaults — the vertical's ink
+// character stays fixed rather than opened up on the rail.
 export const SLIDER_KEYS_SIMPLE_SIGNAL: (keyof SignalParams)[] = [
   "seed",
   "lineWidth",
-  "cutout",
 ];
 
 export interface SignalLine {

@@ -62,7 +62,7 @@ export const DEFAULT_CONTOUR: ContourParams = {
   // canvas, which starves the peaks and basins of lines — the opposite of the
   // even coverage it was reached for. `evenness` does that job properly.
   fill: 0.2,
-  evenness: 0.6,
+  evenness: 1,
   lineWidth: 0.3,
   // Ink treatment, both dialled in against the reference and locked — no
   // sliders, so the pass always fattens the contours and breaks them by this
@@ -122,8 +122,9 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
 };
 
 // The only sliders exposed in the UI. Every other param stays at its default,
-// including Density (`levels`), settled at 10, and the ink treatment pair Stamp
-// and Line Breaks, settled at 0.39 and 0.72.
+// including Density (`levels`), settled at 12, Spread (`evenness`), which is
+// what keeps every seed's linework covering the whole canvas, and the ink
+// treatment pair Stamp and Line Breaks, settled at 0.39 and 0.72.
 export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
   "seed",
   "lineWidth",
@@ -246,27 +247,35 @@ function levelRelief(
   }
 }
 
-/** Separable box blur, edge-clamped. */
+/**
+ * Box mean over a (2r+1)² window, via a summed-area table so the radius is
+ * free — it runs to half a landform, which is most of the grid. Windows are
+ * cropped at the edges rather than extended, so border cells average over what
+ * is actually there.
+ */
 function boxBlur(src: Float64Array, gw: number, gh: number, r: number): Float64Array {
-  const tmp = new Float64Array(gw * gh);
-  const out = new Float64Array(gw * gh);
+  const sw = gw + 1;
+  const sat = new Float64Array(sw * (gh + 1));
   for (let j = 0; j < gh; j++) {
-    const row = j * gw;
+    let rowSum = 0;
     for (let i = 0; i < gw; i++) {
-      let sum = 0;
-      for (let k = -r; k <= r; k++) {
-        sum += src[row + Math.min(gw - 1, Math.max(0, i + k))];
-      }
-      tmp[row + i] = sum / (2 * r + 1);
+      rowSum += src[j * gw + i];
+      sat[(j + 1) * sw + i + 1] = sat[j * sw + i + 1] + rowSum;
     }
   }
+  const out = new Float64Array(gw * gh);
   for (let j = 0; j < gh; j++) {
+    const j0 = Math.max(0, j - r);
+    const j1 = Math.min(gh - 1, j + r);
     for (let i = 0; i < gw; i++) {
-      let sum = 0;
-      for (let k = -r; k <= r; k++) {
-        sum += tmp[Math.min(gh - 1, Math.max(0, j + k)) * gw + i];
-      }
-      out[j * gw + i] = sum / (2 * r + 1);
+      const i0 = Math.max(0, i - r);
+      const i1 = Math.min(gw - 1, i + r);
+      const sum =
+        sat[(j1 + 1) * sw + i1 + 1] -
+        sat[j0 * sw + i1 + 1] -
+        sat[(j1 + 1) * sw + i0] +
+        sat[j0 * sw + i0];
+      out[j * gw + i] = sum / ((j1 - j0 + 1) * (i1 - i0 + 1));
     }
   }
   return out;

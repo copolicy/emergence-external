@@ -113,13 +113,12 @@ export const NETWORK_HINTS: Record<keyof NetworkParams, string> = {
 };
 
 // Taper, Skew and Density stay off the rail — they're held at the DEFAULT_NETWORK
-// values above.
+// values above. Stamp and Line Breaks are locked too — the vertical's ink
+// character stays fixed rather than opened up on the rail.
 export const SLIDER_KEYS_SIMPLE_NETWORK: (keyof NetworkParams)[] = [
   "seed",
   "lineWidth",
   "nodeSize",
-  "stamp",
-  "cutout",
 ];
 
 // ± fraction the per-edge stroke weight wanders around the Line Weight slider.
