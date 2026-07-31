@@ -31,16 +31,18 @@ export interface MeshParams {
 
 export const DEFAULT_MESH: MeshParams = {
   seed: 17545,
-  spacing: 36,
+  // Fixed — no sliders for these four.
   warp: 5,
+  spacing: 32,
   fieldScale: 1.5,
-  fieldX: -1.6,
-  fieldY: 0,
-  lineWidth: 0.6,
   jitter: 0,
+  // Walks the fold up and left into the frame; read off the tuned rail.
+  fieldX: -0.6,
+  fieldY: -0.8,
+  lineWidth: 0.6,
   // Same treatment defaults as the Root Brush / vertical-card references.
   stamp: 0.34,
-  cutout: 0.63,
+  cutout: 0.47,
 };
 
 export const MESH_RANGES: Record<keyof MeshParams, [number, number, number]> = {
@@ -86,19 +88,26 @@ export const MESH_HINTS: Record<keyof MeshParams, string> = {
     "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
+// Warp, Density, Jitter and Field Scale are held at their DEFAULT_MESH values —
+// no sliders. Warp X/Y stay on the rail: they only walk the fold around the
+// frame, so they reframe the drape without changing how it's drawn.
 export const SLIDER_KEYS_SIMPLE_MESH: (keyof MeshParams)[] = [
   "seed",
-  "spacing",
-  // Temporary tuning sliders — drop these once the warp defaults are dialled
-  // in, to match the other simple rails.
-  "warp",
-  "fieldScale",
   "fieldX",
   "fieldY",
-  "jitter",
   "lineWidth",
   "cutout",
 ];
+
+/**
+ * Camera zoom — the finished lattice is magnified about the canvas centre, so the
+ * drape is seen from closer in without its shape changing. Applied after the warp
+ * (see computeMesh) rather than by widening the cells: that keeps it a pure zoom,
+ * where Density still means cell size and the warp field scales along with the
+ * grid instead of the ripples staying put while the cells grow past them.
+ * Line weight is deliberately left out — it's ink set on the rail, not geometry.
+ */
+const CAMERA_ZOOM = 1.3;
 
 export interface MeshLine {
   pts: number[];
@@ -183,6 +192,17 @@ export function computeMesh(w: number, h: number, p: MeshParams): MeshLine[] {
       xs[i] = x + dx;
       ys[i] = y + dy;
     }
+  }
+
+  // Move the camera in: magnifying the warped nodes about the centre pushes the
+  // outer ring of the lattice off-frame, which is exactly what a closer camera
+  // sees. The pre-image of the frame is a sub-rectangle of the lattice we already
+  // built, so no extra rows or columns are needed.
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  for (let i = 0; i < xs.length; i++) {
+    xs[i] = cx + (xs[i] - cx) * CAMERA_ZOOM;
+    ys[i] = cy + (ys[i] - cy) * CAMERA_ZOOM;
   }
 
   const lines: MeshLine[] = [];

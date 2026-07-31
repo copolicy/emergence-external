@@ -32,7 +32,7 @@ const EXPORT_STROKE_KEYS = new Set([
   "thickness",
   "taprootThickness",
   "branchWidth",
-  "chamfer",
+  "corner",
   "padSize",
   "pitch",
   "dotSize",

@@ -8,14 +8,17 @@ import {
   type StampOpts,
 } from "./stampTreatment";
 
-// Education — a low-poly knowledge mesh: an evenly spread Delaunay
-// triangulation across the full field, inked at a single edge weight with
-// pooled dots at the vertices. Abnormally long hull edges
+// Education — a low-poly knowledge mesh: a Delaunay triangulation spread across
+// the full field at an even overall density but off an even lattice, so the
+// triangles stretch rather than settling into equilaterals. Inked at a lightly
+// varying edge weight with pooled dots at the vertices. Abnormally long hull edges
 // are pruned so the boundary frays instead of closing into a clean polygon, and
-// the mesh thins out toward the bottom rather than stopping at a line.
+// the mesh thins out toward the bottom rather than stopping at a line. With Fade
+// on, that same dissolve also runs toward the left edge, so the mass drains out
+// of the bottom-left corner instead of being cropped square by the frame.
 export const NW = 680;
 export const NH = 580;
-export const INK = "#00280F"; // Dark green
+export const INK = "#C0B663"; // Gold
 export const BG = "#F5F5F2"; // Cream
 
 export interface NetworkParams {
@@ -25,6 +28,7 @@ export interface NetworkParams {
   lineWidth: number;
   nodeSize: number; // filled dot radius (0 = lines only)
   taper: number; // 0..1 how high up the field starts thinning toward the bottom
+  skew: number; // 0..1 how far points wander off even spacing (0 = equilateral)
   emphasis: number; // 0..1 share of vertices whose dots pool heavier
   // ink treatment — the same stamp/cutout render pass the Root Brush runs
   stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
@@ -32,19 +36,27 @@ export interface NetworkParams {
 }
 
 export const DEFAULT_NETWORK: NetworkParams = {
-  seed: 33917,
-  nodes: 76,
+  seed: 67819,
+  nodes: 75,
   linkDist: 1.9,
   // Hairline edges, fattened back up by the stamp pass below. The treatment's
   // radii scale with the line weight, so this ratio — not the raw stroke — is
   // what keeps Line Breaks nicking the ink instead of eroding it away.
-  lineWidth: 0.6,
-  nodeSize: 3.2,
-  taper: 0.62,
+  lineWidth: 0.38,
+  nodeSize: 2.4,
+  // Taper, Skew and Density are fixed — no sliders. These are the tuned values
+  // the mesh is drawn at; everything the rail still exposes is judged against
+  // them.
+  taper: 0.35,
+  skew: 0.22,
   emphasis: 0.22,
-  // Same treatment defaults as the Root Brush / vertical-card references.
-  stamp: 0.34,
-  cutout: 0.34,
+  // A heavy stamp against a light cutout: the mesh is short edges meeting at
+  // junctions, so a gentle pass barely registers — the ink only reads as drawn
+  // once the stamp has fused the junctions. The cutout is held well back from
+  // it because the erode is a fraction of the stamp-fattened ink, so at this
+  // stamp a little goes a long way.
+  stamp: 0.65,
+  cutout: 0.35,
 };
 
 export const NETWORK_RANGES: Record<
@@ -57,8 +69,14 @@ export const NETWORK_RANGES: Record<
   lineWidth: [0.3, 2.5, 0.01],
   nodeSize: [0, 6, 0.1],
   taper: [0.2, 1, 0.02],
+  skew: [0, 1, 0.02],
   emphasis: [0, 0.6, 0.02],
-  stamp: [0, 0.45, 0.01],
+  // Opened past the 0.45 the other tools cap at — the mesh is short edges
+  // meeting at junctions and wants a heavier pass than they do. Stops at 0.7:
+  // the cutout erodes a FRACTION of the stamp-fattened ink, so raising Stamp
+  // raises the erode with it, and past ~0.75 the edges are eaten away and the
+  // mesh collapses to loose dots.
+  stamp: [0, 0.7, 0.01],
   cutout: [0, 1, 0.01],
 };
 
@@ -69,6 +87,7 @@ export const NETWORK_LABELS: Record<keyof NetworkParams, string> = {
   lineWidth: "Line Weight",
   nodeSize: "Nodes",
   taper: "Taper",
+  skew: "Skew",
   emphasis: "Hubs",
   stamp: "Stamp",
   cutout: "Line Breaks",
@@ -83,24 +102,28 @@ export const NETWORK_HINTS: Record<keyof NetworkParams, string> = {
   nodeSize: "Radius of the inked dots at each vertex. Zero hides nodes.",
   taper:
     "Where the mesh starts thinning toward the bottom. Higher values hold full density further down, leaving a shallower band of stragglers.",
+  skew:
+    "How far the points wander off even spacing. Zero triangulates into near-equilateral triangles; higher values stretch them into longer, thinner shapes.",
   emphasis:
-    "Share of vertices whose dots pool heavier than the rest. Edge weight is uniform, so the emphasis reads as heavier ink at the junctions rather than thicker strokes.",
+    "Share of vertices whose dots pool heavier than the rest. Edge weight barely varies, so the emphasis reads as heavier ink at the junctions rather than thicker strokes.",
   stamp:
     "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
   cutout:
     "Cutout pass (à la Photoshop's Cutout filter). Simplifies the stroke contours and pinches thin spots into organic breaks and dashes — never thickens the line. Zero switches it off.",
 };
 
+// Taper, Skew and Density stay off the rail — they're held at the DEFAULT_NETWORK
+// values above.
 export const SLIDER_KEYS_SIMPLE_NETWORK: (keyof NetworkParams)[] = [
   "seed",
-  "nodes",
   "lineWidth",
   "nodeSize",
-  "emphasis",
-  "taper",
   "stamp",
   "cutout",
 ];
+
+// ± fraction the per-edge stroke weight wanders around the Line Weight slider.
+const EDGE_WEIGHT_JITTER = 0.3;
 
 export interface NetworkLine {
   pts: number[];
@@ -183,6 +206,7 @@ function scatterNodes(
   h: number,
   count: number,
   taper: number,
+  skew: number,
   seed: number,
   rand: () => number,
 ): { x: number; y: number }[] {
@@ -216,6 +240,21 @@ function scatterNodes(
     pts.push({ x, y, spacing });
   }
 
+  // Even spacing triangulates into near-equilateral triangles — too regular to
+  // read as drawn. Nudging each point off the lattice by a fraction of its own
+  // spacing pulls neighbours together in places and apart in others, so the
+  // triangles stretch into the longer, thinner shapes of the reference. The
+  // wander is biased vertically (the mesh is wider than it is tall, and the
+  // reference's long spans run down the field), and stays under half a spacing
+  // so the mesh keeps its even overall coverage rather than clumping.
+  if (skew > 0) {
+    for (const p of pts) {
+      const j = skew * 0.48 * p.spacing;
+      p.x += (rand() * 2 - 1) * j;
+      p.y += (rand() * 2 - 1) * j * 1.35;
+    }
+  }
+
   return pts.map((p) => ({ x: p.x, y: p.y }));
 }
 
@@ -236,6 +275,7 @@ export function computeNetwork(
     h,
     Math.max(4, Math.round(p.nodes)),
     p.taper,
+    p.skew,
     p.seed,
     rand,
   );
@@ -284,7 +324,11 @@ export function computeNetwork(
 
   const lines: NetworkLine[] = [];
   for (const [a, b, len] of rawEdges) {
-    const local = Math.min(nn[a], nn[b]);
+    // The LOOSER of the two endpoints' spacings. Skew puts some points close
+    // together, and measuring against the tighter one would take that pair's
+    // short edge as the local scale and prune every other edge at both
+    // vertices — tearing holes in the mesh and stranding the pair on its own.
+    const local = Math.max(nn[a], nn[b]);
     if (!Number.isFinite(local)) continue;
     if (len > local * factor) continue;
     const my = (nodes[a].y + nodes[b].y) * 0.5;
@@ -292,14 +336,52 @@ export function computeNetwork(
     const order = Math.min(1, Math.max(0, my / h));
     lines.push({
       pts: [nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y],
-      // Every edge inks at one weight — the mesh reads as a single drawn
-      // lattice, and what variation there is comes from the ink treatment.
-      w: p.lineWidth,
+      // Edges ink at a jittered weight around the slider value. The mesh still
+      // reads as one drawn lattice, but the cutout pass needs something to bite
+      // on selectively: with every edge at an identical weight the erode either
+      // clears the whole field or none of it, so the Line Breaks slider jumps
+      // from "no breaks" straight to "blank canvas". The spread lets the light
+      // edges pinch into breaks at a setting the heavy ones ride out.
+      w: p.lineWidth * (1 - EDGE_WEIGHT_JITTER + rand() * EDGE_WEIGHT_JITTER * 2),
       order,
     });
   }
 
   return { lines, nodes };
+}
+
+/**
+ * Education's dissolve: the shared bottom fade, plus the same treatment mirrored
+ * along X so the mesh also runs out toward the LEFT edge instead of ending on the
+ * frame. The two axes are seeded apart, so each line's horizontal and vertical
+ * cutoffs stagger independently and the bottom-left corner thins out as one
+ * continuous run rather than along two visible lines. Multiplying the tapers
+ * means an edge heading into the corner loses width and opacity from both at
+ * once, which is what puts the point on it.
+ */
+function makeNetworkFade(w: number, h: number, seed: number) {
+  const down = makeFade(w, h, { seed });
+  // Fed (w - x) as its depth: makeFade always dissolves toward its high end, so
+  // mirroring the coordinate turns it around to face x = 0. Its extent is the
+  // width, so the band is a fraction of the field horizontally.
+  // Deliberately a much shallower band than the bottom fade: the two tapers
+  // MULTIPLY, so a left dissolve at the vertical fade's depth washes the whole
+  // corner out. Cutting late (start/floor near 1) and tapering over a short run
+  // keeps the left edge a soft break rather than a gradient across the field.
+  const left = makeFade(w, w, {
+    seed: (seed ^ 0x4c46) >>> 0,
+    start: 0.93,
+    floor: 0.995,
+    tipFrac: 0.12,
+  });
+  return {
+    keep: (id: number, x: number, y: number) =>
+      down.keep(id, x, y) && left.keep(id, y, w - x),
+    alpha: (id: number, x: number, y: number) =>
+      down.alpha(id, x, y) * left.alpha(id, y, w - x),
+    width: (id: number, x: number, y: number) =>
+      down.width(id, x, y) * left.width(id, y, w - x),
+  };
 }
 
 export function drawNetwork(
@@ -349,7 +431,7 @@ function paintNetwork(
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = "round";
 
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeNetworkFade(w, h, fadeSeed) : null;
   const SPREAD = 0.6;
   const denom = 1 - SPREAD;
 
@@ -414,7 +496,7 @@ export function buildNetworkSVG(
   stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeNetworkFade(w, h, fadeSeed) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
   ];

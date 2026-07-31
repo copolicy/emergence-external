@@ -59,7 +59,7 @@ export const DEFAULT_FLOW: FlowParams = {
   // Broad, near-laminar currents sweeping down to the left — barely any swirl,
   // so the lanes read as one family of long arcs rather than eddies.
   fieldScale: 3,
-  swirl: 0.1,
+  swirl: 0.15,
   turbulence: 1,
   drift: 144,
   spacing: 12,
@@ -68,8 +68,10 @@ export const DEFAULT_FLOW: FlowParams = {
   lineWidth: 1.4,
   widthVar: 0.1,
   jitter: 1,
-  dash: 80,
-  dashGap: 0.05,
+  // Unbroken lanes. With dash at 0 the runs never break, so dashGap has
+  // nothing to space and rides at 0 too.
+  dash: 0,
+  dashGap: 0,
   arrowSize: 4,
   emergeX: 0.5,
   emergeY: 0,
@@ -216,15 +218,13 @@ export const FLOW_HINTS: Record<keyof FlowParams, string> = {
 // the stroke width.
 export const SLIDER_KEYS_SIMPLE: (keyof FlowParams)[] = [
   "seed",
-  // Direction + swirl steer the whole field — the two knobs for aiming the
-  // current, so they belong on the simple rail next to density.
-  "drift",
-  "swirl",
-  "fieldScale",
-  "spacing",
+  // Direction, swirl, field scale and density are settled: the field is meant
+  // to sweep down-left at 144° with just enough curl to read as ridges, on one
+  // lane spacing, and that is the vertical's look rather than something to
+  // tune per composition. The dash pair is off too — the lanes run unbroken
+  // and what breakage there is comes from Line Breaks. All stay at their
+  // defaults and off the rail.
   "lineWidth",
-  "dash",
-  "dashGap",
   "cutout",
 ];
 
@@ -319,7 +319,9 @@ export function buildNoiseField(w: number, h: number, p: FlowParams): Field {
   const octaves = Math.max(1, Math.round(p.turbulence));
   return (x, y) => {
     const n = fbm(x / cell, y / cell, p.seed, octaves);
-    return drift + (n - 0.5) * TAU * p.swirl;
+    // Negated so the curl runs the other way round the drift: the ridges lean
+    // into the sweep rather than away from it.
+    return drift - (n - 0.5) * TAU * p.swirl;
   };
 }
 
@@ -763,8 +765,16 @@ export function traceStreamlines(
   // the subject — becomes legible. Without an image the spacing is uniform.
   const minSep = tone ? Math.max(1.6, base * 0.3) : base;
   const grid = Math.max(1, minSep * 0.5);
-  const cols = Math.ceil(w / grid) + 1;
-  const rows = Math.ceil(h / grid) + 1;
+  // Bleed band outside the canvas. Seeds and walks are allowed into it so the
+  // linework crosses the edge and is clipped by the frame, instead of stopping a
+  // half-seed-step short and leaving a bare margin along every side.
+  //
+  // Zero when there is an image: with a photo the silhouette is the point, lines
+  // are meant to stop at the subject's edge, and pad 0 reduces every expression
+  // below to exactly the un-padded arithmetic.
+  const pad = tone ? 0 : base * 2;
+  const cols = Math.ceil((w + pad * 2) / grid) + 1;
+  const rows = Math.ceil((h + pad * 2) / grid) + 1;
   const occ = new Uint8Array(cols * rows);
 
   // Desired centre-to-centre gap at a point: minSep in the darkest areas,
@@ -777,8 +787,8 @@ export function traceStreamlines(
   };
 
   const cellAt = (x: number, y: number) => {
-    const gx = Math.floor(x / grid);
-    const gy = Math.floor(y / grid);
+    const gx = Math.floor((x + pad) / grid);
+    const gy = Math.floor((y + pad) / grid);
     if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) return -1;
     return gy * cols + gx;
   };
@@ -791,14 +801,14 @@ export function traceStreamlines(
   // local spacing keeps the neighbouring line roughly `localSep` away.
   const markPoint = (x: number, y: number, r: number) => {
     const r2 = r * r;
-    const gx0 = Math.max(0, Math.floor((x - r) / grid));
-    const gx1 = Math.min(cols - 1, Math.floor((x + r) / grid));
-    const gy0 = Math.max(0, Math.floor((y - r) / grid));
-    const gy1 = Math.min(rows - 1, Math.floor((y + r) / grid));
+    const gx0 = Math.max(0, Math.floor((x - r + pad) / grid));
+    const gx1 = Math.min(cols - 1, Math.floor((x + r + pad) / grid));
+    const gy0 = Math.max(0, Math.floor((y - r + pad) / grid));
+    const gy1 = Math.min(rows - 1, Math.floor((y + r + pad) / grid));
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
-        const cx = (gx + 0.5) * grid;
-        const cy = (gy + 0.5) * grid;
+        const cx = (gx + 0.5) * grid - pad;
+        const cy = (gy + 0.5) * grid - pad;
         const dx = cx - x;
         const dy = cy - y;
         if (dx * dx + dy * dy <= r2) occ[gy * cols + gx] = 1;
@@ -821,7 +831,7 @@ export function traceStreamlines(
       const a2 = field(mx, my);
       x += Math.cos(a2) * p.stepLen * dir;
       y += Math.sin(a2) * p.stepLen * dir;
-      if (x < 0 || y < 0 || x >= w || y >= h) break;
+      if (x < -pad || y < -pad || x >= w + pad || y >= h + pad) break;
       if (blocked(x, y)) break;
       // Stop at the subject's edge so lines don't trail off into light areas —
       // this keeps the silhouette crisp instead of streaming into the background.
@@ -835,11 +845,11 @@ export function traceStreamlines(
   // already-occupied candidates are rejected cheaply below.
   const seedStep = tone ? Math.max(2, minSep) : base;
 
-  for (let gy = seedStep * 0.5; gy < h; gy += seedStep) {
-    for (let gx = seedStep * 0.5; gx < w; gx += seedStep) {
+  for (let gy = -pad + seedStep * 0.5; gy < h + pad; gy += seedStep) {
+    for (let gx = -pad + seedStep * 0.5; gx < w + pad; gx += seedStep) {
       const sx = gx + (rand() - 0.5) * seedStep * p.jitter;
       const sy = gy + (rand() - 0.5) * seedStep * p.jitter;
-      if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+      if (sx < -pad || sy < -pad || sx >= w + pad || sy >= h + pad) continue;
       if (blocked(sx, sy)) continue;
       if (tone && tone(sx, sy) < p.threshold) continue;
 

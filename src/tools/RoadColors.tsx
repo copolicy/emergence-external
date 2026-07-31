@@ -48,8 +48,31 @@ const wayKey = (w: RoadWay) =>
 // Native preview area — the actual pixel dimensions come from the size picker
 // (dimsForPreview keeps this area but reshapes to the chosen aspect ratio).
 const ROAD_BASE = 1000;
-const DEFAULT_ZOOM = 2.2;
-const DEFAULT_VIEW: View = { zoom: DEFAULT_ZOOM, panX: 0, panY: 0 };
+const MAX_ZOOM = 16;
+
+/**
+ * What the Zoom / Offset controls edit. Placement is held as a FRACTION of the
+ * furthest pan that still keeps the map covering the canvas — 0 centred, ±1
+ * hard against an edge — not as a pixel offset, so one saved default frames the
+ * same view at every canvas size and aspect ratio. `makeProjector` wants pixels,
+ * so the fractions are resolved against `maxPan` for the current frame.
+ */
+interface Placement {
+  zoom: number;
+  offX: number;
+  offY: number;
+}
+
+// The view the tool opens on, and what "Fit" returns to. Dial the sliders to a
+// framing you like, then copy the three numbers here to make it the default.
+const DEFAULT_PLACEMENT: Placement = { zoom: 6.55, offX: -0.1, offY: 0.04 };
+
+/** Resolve a placement's fractional offsets into pixel pan for a w×h frame. */
+function viewFor(p: Placement, w: number, h: number): View {
+  const m = maxPan(w, h, p.zoom);
+  return { zoom: p.zoom, panX: p.offX * m.x, panY: p.offY * m.y };
+}
+
 // Automotive vertical defaults — gold street grid on cream, matching the
 // Vertical 04 reference card.
 const BG = "#F5F5F2";
@@ -123,9 +146,10 @@ export default function RoadColors({
   const [ink, setInk] = useState(INK);
   const [fade, setFade] = useState(true);
   // Ink treatment — the same stamp/cutout render pass the rest of the tool
-  // family runs. Off by default so the vertical's street grid reads as clean
-  // linework until the sliders are dialled up.
-  const [stamp, setStamp] = useState(0);
+  // family runs. A light stamp by default: it fuses the junctions so the grid
+  // reads as drawn rather than plotted. Cutout stays off — the street grid is
+  // already a mesh of short segments and breaking it just erodes the map.
+  const [stamp, setStamp] = useState(0.27);
   const [cutout, setCutout] = useState(0);
   // Treatment render quality: dropped while sliders scrub, 1 at rest.
   const qualityRef = useRef(1);
@@ -137,9 +161,10 @@ export default function RoadColors({
   const [place, setPlace] = useState("San Francisco, California");
   const [radiusKm, setRadiusKm] = useState(4);
 
-  // View transform — zoom about the centre + pan in px. Decoupled from the
+  // View transform — zoom about the centre + placement. Decoupled from the
   // fetch radius, so zooming never re-downloads.
-  const [view, setView] = useState<View>(DEFAULT_VIEW);
+  const [placement, setPlacement] = useState<Placement>(DEFAULT_PLACEMENT);
+  const view = useMemo<View>(() => viewFor(placement, w, h), [placement, w, h]);
   const dragRef = useRef<{ x: number; y: number } | null>(null);
 
   const [data, setData] = useState<RoadData | null>(null);
@@ -392,9 +417,13 @@ export default function RoadColors({
     dataRef.current = data;
   }, [data]);
 
-  // New data → play the fill-in animation. Only fires on a fresh fetch.
+  // New data → paint the finished map straight away. The fill-in animation is
+  // still there, but only when asked for (Play, or the MP4 recording): opening
+  // the tool or fetching a place shouldn't hold the map back for three seconds,
+  // and the static path is the treated one, so this is also the export-accurate
+  // frame rather than the raw linework the fill-in draws.
   useEffect(() => {
-    if (data) animate(data);
+    if (data) renderStatic(data);
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -404,9 +433,9 @@ export default function RoadColors({
   }, [data]);
 
   // Style / view / size change → instant redraw, no animation. Waits out an
-  // in-flight fill-in (so the fresh-fetch animation isn't cancelled at start),
-  // then re-fires when `animating` flips false — a size picked mid-draw is
-  // applied at animation end instead of being silently dropped.
+  // in-flight fill-in (so a Play or a recording isn't cut off mid-draw), then
+  // re-fires when `animating` flips false — a size picked mid-draw is applied at
+  // animation end instead of being silently dropped.
   useEffect(() => {
     if (animating) return;
     const d = dataRef.current;
@@ -421,7 +450,7 @@ export default function RoadColors({
     setStatus({ kind: "loading", msg: "Loading saved Bay Area roads…" });
     try {
       const d = await loadSnapshot(SNAPSHOT_URL);
-      setView(DEFAULT_VIEW);
+      setPlacement(DEFAULT_PLACEMENT);
       setData(d);
       setStatus({ kind: "ready" });
     } catch (e) {
@@ -454,7 +483,7 @@ export default function RoadColors({
       });
       const d = await fetchRoads(g.lat, g.lon, radiusKm * 1000, g.label, ac.signal);
       if (ac.signal.aborted) return;
-      setView(DEFAULT_VIEW);
+      setPlacement(DEFAULT_PLACEMENT);
       setData(d);
       setStatus({ kind: "ready" });
     } catch (e) {
@@ -518,28 +547,45 @@ export default function RoadColors({
   }, [recorder.recording]);
 
   // ----- zoom / pan -----
-  const MAX_ZOOM = 16;
 
-  // Zoom about a point given in preview px (defaults to canvas centre).
+  // Zoom about a point given in preview px (defaults to canvas centre). The
+  // anchoring maths works in px, then converts back to fractional placement.
   const zoomAt = useCallback(
     (factor: number, mx = w / 2, my = h / 2) => {
-      setView((v) => {
-        const nz = clamp(v.zoom * factor, 1, MAX_ZOOM);
-        const k = nz / v.zoom;
+      setPlacement((p) => {
+        const nz = clamp(p.zoom * factor, 1, MAX_ZOOM);
+        const k = nz / p.zoom;
         const cx = w / 2;
         const cy = h / 2;
+        const from = viewFor(p, w, h);
         const m = maxPan(w, h, nz);
+        const panX = clamp(mx - cx - (mx - cx - from.panX) * k, -m.x, m.x);
+        const panY = clamp(my - cy - (my - cy - from.panY) * k, -m.y, m.y);
         return {
           zoom: nz,
-          panX: clamp(mx - cx - (mx - cx - v.panX) * k, -m.x, m.x),
-          panY: clamp(my - cy - (my - cy - v.panY) * k, -m.y, m.y),
+          offX: m.x ? panX / m.x : 0,
+          offY: m.y ? panY / m.y : 0,
         };
       });
     },
     [w, h],
   );
 
-  const resetView = useCallback(() => setView(DEFAULT_VIEW), []);
+  const setZoom = useCallback(
+    (z: number) =>
+      setPlacement((p) => ({ ...p, zoom: clamp(z, 1, MAX_ZOOM) })),
+    [],
+  );
+  const setOffX = useCallback(
+    (v: number) => setPlacement((p) => ({ ...p, offX: clamp(v, -1, 1) })),
+    [],
+  );
+  const setOffY = useCallback(
+    (v: number) => setPlacement((p) => ({ ...p, offY: clamp(v, -1, 1) })),
+    [],
+  );
+
+  const resetView = useCallback(() => setPlacement(DEFAULT_PLACEMENT), []);
 
   // Mouse-wheel zoom toward the cursor. Native, non-passive so we can prevent
   // the page from scrolling.
@@ -570,12 +616,12 @@ export default function RoadColors({
     const dx = (e.clientX - d.x) * (w / rect.width);
     const dy = (e.clientY - d.y) * (h / rect.height);
     dragRef.current = { x: e.clientX, y: e.clientY };
-    setView((v) => {
-      const m = maxPan(w, h, v.zoom);
+    setPlacement((p) => {
+      const m = maxPan(w, h, p.zoom);
       return {
-        ...v,
-        panX: clamp(v.panX + dx, -m.x, m.x),
-        panY: clamp(v.panY + dy, -m.y, m.y),
+        ...p,
+        offX: m.x ? clamp(p.offX + dx / m.x, -1, 1) : 0,
+        offY: m.y ? clamp(p.offY + dy / m.y, -1, 1) : 0,
       };
     });
   };
@@ -755,6 +801,42 @@ export default function RoadColors({
       <div className="specimen-tree__group">
         <span className="specimen-tree__group-title">Canvas</span>
         <AspectRatioControl value={config} onChange={setConfig} disabled={loading} />
+      </div>
+
+      <div className="specimen-tree__group">
+        <span className="specimen-tree__group-title">View</span>
+        <div className="specimen-tree__sliders">
+          {slider(
+            "Zoom",
+            placement.zoom,
+            1,
+            MAX_ZOOM,
+            0.05,
+            setZoom,
+            "×",
+            "How far into the map the frame is cropped. Same control as the +/− buttons and the scroll wheel.",
+          )}
+          {slider(
+            "Offset X",
+            placement.offX,
+            -1,
+            1,
+            0.01,
+            setOffX,
+            "",
+            "Where the crop sits horizontally: 0 is centred, ±1 is hard against an edge. A fraction of the available pan, so it frames the same view at any canvas size.",
+          )}
+          {slider(
+            "Offset Y",
+            placement.offY,
+            -1,
+            1,
+            0.01,
+            setOffY,
+            "",
+            "Where the crop sits vertically: 0 is centred, ±1 is hard against an edge. At Zoom 1 there is no room to pan, so the offsets do nothing until you zoom in.",
+          )}
+        </div>
       </div>
 
       <div className="specimen-tree__group">
@@ -949,7 +1031,9 @@ export default function RoadColors({
               style={{ padding: "4px 8px", fontSize: 11 }}
               onClick={resetView}
               disabled={
-                view.zoom === DEFAULT_ZOOM && view.panX === 0 && view.panY === 0
+                placement.zoom === DEFAULT_PLACEMENT.zoom &&
+                placement.offX === DEFAULT_PLACEMENT.offX &&
+                placement.offY === DEFAULT_PLACEMENT.offY
               }
             >
               Fit

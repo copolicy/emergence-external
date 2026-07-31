@@ -26,6 +26,19 @@ import {
 
 const GROWTH_MS = 3200;
 
+// Density reads backwards from the param it drives: `spacing` is the gap
+// between clusters, so the smaller number is the denser mat. Any row listed
+// here is flipped end-for-end on the way out and back on the way in — drag
+// right, get denser — while the stored param stays a gap. (Density is fixed
+// off the rail today; this keeps it right if the row is ever put back.)
+const INVERTED_KEYS = new Set<keyof HatchParams>(["spacing"]);
+
+const flipParam = (key: keyof HatchParams, v: number) => {
+  if (!INVERTED_KEYS.has(key)) return v;
+  const [min, max] = HATCH_RANGES[key];
+  return min + max - v;
+};
+
 interface HatchProps {
   controlsTarget?: HTMLElement | null;
 }
@@ -247,7 +260,9 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
 
   const renderRow = (key: keyof HatchParams) => {
     const [min, max, step] = HATCH_RANGES[key];
-    const value = params[key];
+    const value = flipParam(key, params[key]);
+    const commit = (v: number) =>
+      updateParam(key, flipParam(key, v) as HatchParams[typeof key]);
     return (
       <label
         key={key}
@@ -262,7 +277,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
             max={max}
             step={step}
             aria-label={HATCH_LABELS[key]}
-            onChange={(v) => updateParam(key, v as HatchParams[typeof key])}
+            onChange={(v) => commit(v)}
           />
         </span>
         <input
@@ -271,9 +286,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
           max={max}
           step={step}
           value={value}
-          onChange={(e) =>
-            updateParam(key, +e.target.value as HatchParams[typeof key])
-          }
+          onChange={(e) => commit(+e.target.value)}
         />
       </label>
     );

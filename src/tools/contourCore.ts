@@ -13,13 +13,20 @@ import {
 // Generative canvas size — matches the other tools.
 export const CW = 680;
 export const CH = 580;
-export const INK = "#00280F";
-export const BG = "#EBFADC";
+// Reversed out — cream linework on mid green.
+export const INK = "#195519"; // Mid green
+export const BG = "#F5F5F2"; // Cream
 
 // Lighter dissolve than the shared default — a topo sheet should stay mostly
 // inked with only a narrow taper right at the edge, not thin out over the
 // whole lower half. Canvas and SVG must share these or the export diverges.
-const CONTOUR_FADE: FadeOptions = { start: 0.92, floor: 0.99, tipFrac: 0.2 };
+//
+// `tipFrac` is a fraction of each line's own cut depth, not of the canvas, so a
+// seemingly modest 0.2 against a cut at 0.92 put the taper's start at 0.736 —
+// linework was already down to 59% weight by mid-depth, and `cutout` then broke
+// the thinned strokes apart entirely, blanking the bottom quarter. Keep this
+// small enough that the taper reads as an edge treatment.
+const CONTOUR_FADE: FadeOptions = { start: 0.92, floor: 0.99, tipFrac: 0.03 };
 
 /**
  * Topographic contour lines. A domain-warped simplex field is sampled onto a
@@ -45,11 +52,11 @@ export interface ContourParams {
 
 export const DEFAULT_CONTOUR: ContourParams = {
   seed: 46933,
-  fieldScale: 2.5,
+  fieldScale: 3,
   octaves: 0,
   warp: 0,
   levels: 10,
-  fill: 0.56,
+  fill: 0.6,
   lineWidth: 0.3,
   stamp: 0.33,
   cutout: 0.72,
@@ -101,11 +108,10 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   contrast: "Tone curve for the image. Above 1 deepens the shadows into denser contours.",
 };
 
-// The only sliders exposed in the UI. Every other param stays at its default.
-// "density" is the number of contour lines; "line weight" is the stroke width.
+// The only sliders exposed in the UI. Every other param stays at its default,
+// including Density (`levels`), which is settled at 10.
 export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
   "seed",
-  "levels",
   "lineWidth",
   "cutout",
 ];
@@ -241,6 +247,11 @@ export function computeContours(
   const sx = w / (gw - 1);
   const sy = h / (gh - 1);
   const lines: ContourLine[] = [];
+  // Smallest ring worth drawing, as a share of the canvas so it holds at any size
+  // or aspect. A single tiny loop around a pinprick in the field reads as speckle
+  // rather than as terrain — at 1080² this floor is about a 30px radius, well under
+  // the median ring (~72px), so it takes the specks and leaves the landforms.
+  const minRingArea = w * h * 0.0024;
 
   geo.forEach((multi, idx) => {
     const order = thresholds.length > 1 ? idx / (thresholds.length - 1) : 1;
@@ -248,7 +259,15 @@ export function computeContours(
       for (const ring of polygon) {
         const pts: number[] = [];
         for (const [gx, gy] of ring) pts.push(gx * sx, gy * sy);
-        if (pts.length >= 6) lines.push({ pts, w: p.lineWidth, order });
+        if (pts.length < 6) continue;
+        // Shoelace area of the closed ring.
+        let a2 = 0;
+        for (let i = 0, n = pts.length / 2; i < n; i++) {
+          const j = (i + 1) % n;
+          a2 += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1];
+        }
+        if (Math.abs(a2) / 2 < minRingArea) continue;
+        lines.push({ pts, w: p.lineWidth, order });
       }
     }
   });
@@ -388,18 +407,11 @@ export function buildContourSVG(
 
 export function randomContourParams(prev: ContourParams): ContourParams {
   const rand = mulberry32((prev.seed * 2654435761) >>> 0);
-  const pick = (min: number, max: number, step: number) => {
-    const steps = Math.floor((max - min) / step);
-    return min + Math.round(rand() * steps) * step;
-  };
-  return {
-    ...prev,
-    seed: Math.floor(rand() * 99999) + 1,
-    fieldScale: pick(3, 9, 0.5),
-    octaves: pick(2, 5, 1),
-    warp: pick(0.3, 1.6, 0.05),
-    levels: pick(8, 20, 1),
-  };
+  // Only the seed. Density, Field Scale, Detail and Meander are all off the panel
+  // and settled at their defaults, and a shuffle must not land on a value there is
+  // no longer any control to bring back — Detail and Meander in particular would
+  // crinkle and warp the coastlines with no way to flatten them again.
+  return { ...prev, seed: Math.floor(rand() * 99999) + 1 };
 }
 
 export { sampleLuminance };

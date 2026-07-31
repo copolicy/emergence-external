@@ -11,7 +11,7 @@ import {
 // handful of transmitters, like radio waves or ripples colliding on water.
 export const SW = 680;
 export const SH = 580;
-export const INK = "#00280F"; // Dark green — matches Telecom vertical card
+export const INK = "#195519"; // Mid green
 export const BG = "#F5F5F2"; // Cream
 
 export interface SignalParams {
@@ -29,17 +29,30 @@ export interface SignalParams {
 
 export const DEFAULT_SIGNAL: SignalParams = {
   seed: 55555,
-  centers: 4,
+  // Fixed at the card's composition — the hero with its cluster of small
+  // circles, and one off-frame family hatching in. Not on the rail: the count
+  // is part of the vertical's look, not a knob.
+  //
+  // Three, not four. A fourth puts a second large circle in frame, nested into
+  // the hero — its outer rings sweep the top of the canvas and cut through the
+  // cluster, which is the whole of the busyness. The card has ONE big circle.
+  centers: 3,
   rings: 9,
-  spacing: 30,
-  lineWidth: 0.6,
-  breakiness: 0.34,
+  // Not on the rail: the ring scale sets the vertical's whole composition —
+  // how much of the frame the hero fills and how the cluster nests inside it —
+  // so it's fixed rather than left as a knob.
+  spacing: 43,
+  lineWidth: 0.5,
+  // Off. The rings draw as whole circles and ALL the breaking comes from the
+  // Line Breaks slider (the cutout pass) — cutting quiet sectors here as well
+  // meant the arcs arrived pre-broken and the slider was breaking what was
+  // already in pieces.
+  breakiness: 0,
   // Barely out of round. The rings must read as drawn with a compass; anything
   // above ~0.12 tips them into ripples and loses the telecom feel.
   jitter: 0.06,
-  // Same treatment defaults as the Root Brush / vertical-card references.
   stamp: 0.34,
-  cutout: 0.34,
+  cutout: 0.7,
 };
 
 export const SIGNAL_RANGES: Record<
@@ -72,7 +85,7 @@ export const SIGNAL_LABELS: Record<keyof SignalParams, string> = {
 export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
   seed: "Random starting value. Same seed always produces the same signal field.",
   centers:
-    "How many circle families are on the canvas. The first sits in frame with a tight nested cluster beside it; the rest push off the edges so only wide sweeping arcs cross the canvas.",
+    "How many circle families are on the canvas. The smallest always draws with two slightly larger companions alongside it, on whichever side the seed picks; the next sits in frame as the hero. After that they alternate — one pushed off the edge so only wide sweeping arcs cross the canvas, then one more circle nested into the hero.",
   rings: "How many concentric rings each circle family draws.",
   spacing:
     "Size of the ring pattern — the gap between successive circles, so the whole family scales with it. Lower packs a small tight ripple; higher blows the circles up into wide sweeps.",
@@ -89,8 +102,6 @@ export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
 
 export const SLIDER_KEYS_SIMPLE_SIGNAL: (keyof SignalParams)[] = [
   "seed",
-  "centers",
-  "spacing",
   "lineWidth",
   "cutout",
 ];
@@ -121,6 +132,8 @@ interface Center {
   inset: number; // innermost ring, as a multiple of Density
   reach: number; // px added before the first ring — off-frame families only
   grow: number; // 0..1 how much the gap widens outward
+  rings: number; // 0..1 share of the Rings count this family draws
+  span: number; // how far past `reach` the family keeps drawing, in px
   sectors: Sector[];
   phaseA: number;
   phaseB: number;
@@ -131,22 +144,94 @@ const SIZE_MIN = 0.45;
 const SIZE_MAX = 1.4;
 
 /**
+ * How far an off-frame family keeps drawing past the point its wave first
+ * reaches the canvas, as a fraction of the short side. The card reads as ONE
+ * circle family with sweeps hatching in from an edge — let the off-frame
+ * waves run the full width and they stop being an accent and start being a
+ * mesh laid over the hero.
+ */
+const SWEEP_MIN = 0.3;
+const SWEEP_MAX = 0.55;
+
+/**
+ * How far the first extra in-frame circle sits from the hero's center, as a
+ * fraction of the hero's own reach, and how much further each one after it
+ * steps. Small on purpose: the extras nest inside the hero so their rings
+ * interleave with it. Push them out toward half the reach and the two ring
+ * fields start crossing at right angles, which reads as collision rather than
+ * as one system knocked off-center.
+ */
+const NEST_MIN = 0.14;
+const NEST_GROWTH = 0.55;
+
+/**
+ * The two companions alongside the smallest circle. Each runs a wider ring gap
+ * than the one before it, draws a short run of rings, and is set clear of its
+ * predecessor by the two outer radii plus CLEARANCE — they sit next to the
+ * smallest circle, never over it.
+ */
+const NEST_RINGS = 0.3;
+const NEST_SIBLING_SIZE = 0.2;
+const NEST_SIBLING_RINGS = 0.3;
+const NEST_SIBLING_CLEARANCE = 0.06;
+/** Width of the arc, in radians, the group is dealt across on its side. */
+const NEST_SIBLING_ARC = 2.6;
+
+/**
+ * Hand breakage — short nicks where the pen lifted, in PIXELS of arc length
+ * so they read the same on a tight inner ring and a wide outer sweep. Kept
+ * small on purpose: this is the fine interruption under the Line Breaks
+ * treatment, not a second source of arcs.
+ */
+const NICK_MIN_PX = 4;
+const NICK_MAX_PX = 15;
+const NICK_MIN_PER_RING = 1;
+
+/**
+ * A lighter dissolve than the shared default. The fields the default was tuned
+ * for run their vectors top to bottom, so a band starting at 0.78 of the height
+ * softens the ENDS of the strokes. A ring has no end — the band just cuts a
+ * chord off the bottom of every circle and tapers it away, which reads as the
+ * circles dissolving rather than as the field settling. Held to the last tenth
+ * of the frame, with a short tip, so the arcs stay whole.
+ */
+const SIGNAL_FADE = { start: 0.9, tipFrac: 0.15 } as const;
+
+/**
  * Lay out the transmitters, smallest family first. The reference card reads as
- * a stack of ripples stepping up in scale, so family i always draws on a wider
- * ring gap than i-1 and is stroked over the top of it.
+ * a stack of ripples stepping up in scale, so the ring gap ramps with the
+ * family index and each family is stroked over the top of the last.
  *
  *   0     the tightest nest, set just off the anchor
  *   1     the hero — anchored in frame, rings climbing off canvas
- *   2..n  pushed clean outside the frame, so only broad near-parallel sweeps
- *         cross the canvas and cross-hatch against the hero
+ *   2..n  alternating: even indices push clean outside the frame, so only
+ *         broad near-parallel sweeps cross the canvas and cross-hatch against
+ *         the hero; odd indices land in frame as further circles, dropped into
+ *         whatever open ground is left.
+ *
+ * The alternation is what makes Circles read as a count. Send every family
+ * past the hero off-frame and the slider only ever thickens one band of
+ * sweeps — you can run it to 12 and never see a second circle.
  */
 function placeCenters(
   w: number,
   h: number,
   n: number,
   rand: () => number,
+  spacing: number,
+  ringCount: number,
 ): Center[] {
   const min = Math.min(w, h);
+
+  /** Roughly where a family's outermost ring lands, in px. */
+  const outerRadius = (
+    stepMul: number,
+    inset: number,
+    grow: number,
+    ringShare: number,
+  ) =>
+    (inset + stepMul * Math.max(1, Math.round(ringCount * ringShare)) * (1 + grow)) *
+    spacing;
 
   const sectorsFor = (count: number): Sector[] =>
     Array.from({ length: count }, () => ({
@@ -159,6 +244,15 @@ function placeCenters(
   // The two in-frame families share this point so their rings nest together.
   const anchorX = w * (0.28 + rand() * 0.2);
   const anchorY = h * (0.32 + rand() * 0.16);
+
+  // Every in-frame center placed so far, with the reach of its outermost ring.
+  // Later circles are set a fraction of that reach away, so they always land
+  // inside a neighbour's ring field and the two interleave.
+  const inFrame: { x: number; y: number; r: number }[] = [];
+  // Direction the first extra circle steps off the hero; the rest turn from it.
+  const nestBase = rand() * TAU;
+  // Which side of the smallest circle its two companions fall on.
+  const nestSide = rand() < 0.5 ? -1 : 1;
 
   const out: Center[] = [];
   for (let i = 0; i < n; i++) {
@@ -175,26 +269,143 @@ function placeCenters(
 
     if (i === 0) {
       // Tightest nest: sits just off the anchor, inside the hero's inner rings.
+      // It reads as a detail in the hero's core, so it draws a short run of
+      // rings — carry it out to the full count and the two families stack into
+      // one over-ringed blob instead of a nest inside a circle.
       const ang = rand() * TAU;
-      const dist = min * (0.14 + rand() * 0.14);
+      const dist = min * (0.08 + rand() * 0.08);
+      const grow = 0.2 + rand() * 0.25;
+      const nestX = anchorX + Math.cos(ang) * dist;
+      const nestY = anchorY + Math.sin(ang) * dist;
       out.push({
-        x: anchorX + Math.cos(ang) * dist,
-        y: anchorY + Math.sin(ang) * dist,
+        x: nestX,
+        y: nestY,
         sx,
         sy,
         rot,
         step,
         inset: 0.5,
         reach: 0,
-        grow: 0.2 + rand() * 0.25,
+        grow,
+        rings: NEST_RINGS,
+        span: Infinity,
         sectors: sectorsFor(1 + Math.floor(rand() * 2)),
         phaseA,
         phaseB,
       });
+
+      // Three companions alongside it, each a step larger than the last, set
+      // clear of it and of each other: the four sit shoulder to shoulder as
+      // separate circles, never interleaving. Each one is pushed off its
+      // PREDECESSOR by the two outer radii plus a margin, so the clearance
+      // holds whatever Scale and Rings are doing to the circle sizes.
+      //
+      // They fall on ONE side — which side is the seed's to pick — so the core
+      // reads as a little run of ripples leaning off the nest rather than a
+      // symmetrical rosette around it.
+      const nestR = outerRadius(step, 0.5, grow, NEST_RINGS);
+      // Sizes 2 and 3 of the ramp, not 1: the ×1.2 companion sat too close to
+      // the nest's own size and read as a duplicate in the middle of the
+      // group. Skipping it steps the three sizes apart clearly.
+      const sibs = [2, 3].map((k) => ({
+        stepMul: step * (1 + NEST_SIBLING_SIZE * k),
+        grow: 0.2 + rand() * 0.25,
+        // Tilted a little off the horizontal so the three centers don't line
+        // up dead level.
+        tilt: (rand() - 0.5) * 0.7,
+        sx: 0.97 + rand() * 0.06,
+        sy: 0.97 + rand() * 0.06,
+        rot: rand() * TAU,
+        sectors: sectorsFor(1 + Math.floor(rand() * 2)),
+        phaseA: rand() * TAU,
+        phaseB: rand() * TAU,
+      }));
+
+      // Pack them rather than chain them. Setting each circle off the LAST one
+      // walks a path, and a path of four reads as a line however much it's
+      // curled. Setting each one tangent to ANY circle already down lets the
+      // group bunch — one tucked under the nest, one out past it — which is
+      // what the reference reads as.
+      //
+      // How far a circle pokes past the frame. A ring clipping the edge still
+      // reads; a center off canvas is just stray arcs, so the radius counts
+      // only partly.
+      const escape = (x: number, y: number, r: number) =>
+        Math.max(
+          0,
+          -x + r * 0.35,
+          x + r * 0.35 - w,
+          -y + r * 0.35,
+          y + r * 0.35 - h,
+        );
+
+      const packed = [{ x: nestX, y: nestY, r: nestR }];
+      const sideAng = nestSide > 0 ? 0 : Math.PI;
+      for (const s of sibs) {
+        const r = outerRadius(s.stepMul, 0.5, s.grow, NEST_SIBLING_RINGS);
+        let bx = nestX;
+        let by = nestY;
+        let best = -Infinity;
+        for (let t = 0; t < 24; t++) {
+          const host = packed[Math.floor(rand() * packed.length)];
+          // Biased to the seed's side, but over a wide enough arc that the
+          // group leans without lining up.
+          const ang = sideAng + s.tilt + (rand() - 0.5) * NEST_SIBLING_ARC;
+          const d = (host.r + r) * (1 + NEST_SIBLING_CLEARANCE);
+          const px = host.x + Math.cos(ang) * d;
+          const py = host.y + Math.sin(ang) * d;
+          // Clearance against every circle already down — negative means it
+          // cuts into one, which disqualifies the spot outright.
+          let gap = Infinity;
+          for (const o of packed) {
+            gap = Math.min(gap, Math.hypot(px - o.x, py - o.y) - (o.r + r));
+          }
+          if (gap < 0) continue;
+          // Staying in frame outweighs breathing room; past a point extra
+          // clearance just spreads the group out again.
+          const score = Math.min(gap, r * 0.5) - escape(px, py, r) * 4;
+          if (score > best) {
+            best = score;
+            bx = px;
+            by = py;
+          }
+        }
+        packed.push({ x: bx, y: by, r });
+      }
+
+      for (let k = 0; k < sibs.length; k++) {
+        const s = sibs[k];
+        out.push({
+          x: packed[k + 1].x,
+          y: packed[k + 1].y,
+          sx: s.sx,
+          sy: s.sy,
+          rot: s.rot,
+          step: s.stepMul,
+          inset: 0.5,
+          reach: 0,
+          grow: s.grow,
+          // A ring or two shorter than the nest itself — three full runs of
+          // rings sitting side by side would crowd the core right out to the
+          // frame edges.
+          rings: NEST_SIBLING_RINGS,
+          span: Infinity,
+          sectors: s.sectors,
+          phaseA: s.phaseA,
+          phaseB: s.phaseB,
+        });
+      }
       continue;
     }
 
     if (i === 1) {
+      const inset = 0.9 + rand() * 0.5;
+      const grow = 0.3 + rand() * 0.2;
+      inFrame.push({
+        x: anchorX,
+        y: anchorY,
+        r: outerRadius(step, inset, grow, 1),
+      });
       out.push({
         x: anchorX,
         y: anchorY,
@@ -202,9 +413,11 @@ function placeCenters(
         sy,
         rot,
         step,
-        inset: 0.9 + rand() * 0.5,
+        inset,
         reach: 0,
-        grow: 0.3 + rand() * 0.2,
+        grow,
+        rings: 1,
+        span: Infinity,
         sectors: sectorsFor(1 + Math.floor(rand() * 2)),
         phaseA,
         phaseB,
@@ -212,26 +425,73 @@ function placeCenters(
       continue;
     }
 
-    // Off-frame families. Sit them beyond an edge and start the rings where
-    // they first reach the canvas, so every ring drawn is a wide sweep.
-    const edge = Math.floor(rand() * 4);
-    const along = 0.1 + rand() * 0.8;
-    const push = min * (0.25 + rand() * 0.75);
-    let x: number;
-    let y: number;
-    if (edge === 0) {
-      x = w + push;
-      y = h * along;
-    } else if (edge === 1) {
-      x = -push;
-      y = h * along;
-    } else if (edge === 2) {
-      x = w * along;
-      y = -push;
-    } else {
-      x = w * along;
-      y = h + push;
+    if (i % 2 === 1) {
+      // A further circle, in frame. It nests INSIDE the hero rather than being
+      // dealt its own patch of canvas: the card reads as one system of rings
+      // knocked slightly off-center, not as separate circles colliding. So the
+      // offset is a small step measured in the hero's reach — enough that the
+      // rings interleave, never so much that they cross at a right angle.
+      //
+      // Measured in reach, not in canvas, so the nesting survives the Scale
+      // slider: a canvas-relative gap only closes once Scale is cranked up far
+      // enough, and by then the rings have run off the edges.
+      const inset = 0.6 + rand() * 0.4;
+      const grow = 0.2 + rand() * 0.3;
+      const mine = step * 0.7;
+      const hero = inFrame[0];
+
+      // Each successive circle steps a little further out, turning by the
+      // golden angle so the cores fan around the hero instead of drifting off
+      // one side. Deliberate, not dealt.
+      const nth = inFrame.length - 1;
+      const d = hero.r * NEST_MIN * (1 + nth * NEST_GROWTH);
+      const ang = nestBase + nth * 2.39996 + (rand() - 0.5) * 0.5;
+      // Kept off the very edge — a center outside the frame turns the family
+      // into another set of edge sweeps, which is what the off-frame ones
+      // are already for.
+      const bx = Math.min(Math.max(hero.x + Math.cos(ang) * d, w * 0.1), w * 0.9);
+      const by = Math.min(Math.max(hero.y + Math.sin(ang) * d, h * 0.1), h * 0.9);
+
+      inFrame.push({ x: bx, y: by, r: outerRadius(mine, inset, grow, 0.7) });
+      out.push({
+        x: bx,
+        y: by,
+        sx,
+        sy,
+        rot,
+        // Held under the hero's gap so it stays the second circle in the
+        // composition rather than a rival for it.
+        step: mine,
+        inset,
+        reach: 0,
+        grow,
+        rings: 0.7,
+        span: Infinity,
+        sectors: sectorsFor(1 + Math.floor(rand() * 2)),
+        phaseA,
+        phaseB,
+      });
+      continue;
     }
+
+    // Off-frame families. Sit them beyond the frame and start the rings where
+    // they first reach the canvas, so every ring drawn is a wide sweep.
+    //
+    // They go on the far side of the anchor, never the hero's own side: a
+    // transmitter sitting behind the hero drives its sweeps straight through
+    // the circles and the composition closes up. Out here they hatch in
+    // against the hero's outer rings and leave the anchor's own quarter open.
+    const awayX = w * 0.5 - anchorX;
+    const awayY = h * 0.5 - anchorY;
+    const away =
+      awayX === 0 && awayY === 0 ? 0 : Math.atan2(awayY, awayX);
+    const ang = away + (rand() - 0.5) * 1.5;
+    // Well clear of the frame. Park one just outside and its first rings land
+    // as tight little arcs hugging that edge — the family has to be far enough
+    // out that everything it draws on canvas is a broad, near-parallel sweep.
+    const dist = min * (0.95 + rand() * 0.8);
+    const x = w * 0.5 + Math.cos(ang) * dist;
+    const y = h * 0.5 + Math.sin(ang) * dist;
     // Distance to the nearest point of the frame — the first ring that lands.
     const dx = Math.max(0, Math.max(-x, x - w));
     const dy = Math.max(0, Math.max(-y, y - h));
@@ -242,10 +502,15 @@ function placeCenters(
       sx,
       sy,
       rot,
-      step,
+      // Tighter gap than an in-frame family of the same size. The sweeps only
+      // read as a hatch when several of them cross the hero's rings; on the
+      // hero's own gap a band this narrow fits three arcs and reads as strays.
+      step: step * 0.6,
       inset: 0,
       reach,
       grow: rand() * 0.15,
+      rings: 1,
+      span: min * (SWEEP_MIN + rand() * (SWEEP_MAX - SWEEP_MIN)),
       sectors: sectorsFor(1 + Math.floor(rand() * 2)),
       phaseA,
       phaseB,
@@ -267,11 +532,20 @@ export function computeSignal(
   p: SignalParams,
 ): SignalLine[] {
   const rand = mulberry32(p.seed ^ 0xb5f7);
-  const centers = placeCenters(w, h, Math.max(1, Math.round(p.centers)), rand);
   const lines: SignalLine[] = [];
   const ringCount = Math.max(1, Math.round(p.rings));
   const step = Math.max(8, p.spacing);
   const round = Math.max(0, p.jitter);
+  // Placement needs the ring scale: how far apart the in-frame circles sit is
+  // measured in ring reach, so the composition holds as Scale moves.
+  const centers = placeCenters(
+    w,
+    h,
+    Math.max(1, Math.round(p.centers)),
+    rand,
+    step,
+    ringCount,
+  );
   // Widest radius worth tracing, measured from anywhere in or near the frame.
   const diag = Math.hypot(w, h);
 
@@ -283,14 +557,20 @@ export function computeSignal(
     // Ring i sits at reach + inset + cStep·i, the gap widening outward by `grow`.
     const base = c.reach + c.inset * step;
     // Off-frame families need the same visible ring count as the hero, so cut
-    // on distance to the far corner rather than on the index alone.
-    const farthest = Math.hypot(
-      Math.max(Math.abs(c.x), Math.abs(w - c.x)),
-      Math.max(Math.abs(c.y), Math.abs(h - c.y)),
+    // on distance to the far corner rather than on the index alone — then
+    // pull that in to the family's own sweep span, so its waves hatch a band
+    // of the canvas instead of crossing the whole of it.
+    const farthest = Math.min(
+      Math.hypot(
+        Math.max(Math.abs(c.x), Math.abs(w - c.x)),
+        Math.max(Math.abs(c.y), Math.abs(h - c.y)),
+      ),
+      c.reach + c.span,
     );
+    const famRings = Math.max(1, Math.round(ringCount * c.rings));
 
-    for (let i = 1; i <= ringCount; i++) {
-      let radius = base + cStep * i * (1 + (c.grow * i) / ringCount);
+    for (let i = 1; i <= famRings; i++) {
+      let radius = base + cStep * i * (1 + (c.grow * i) / famRings);
       // Ring-to-ring drift: the family stays related without being mechanical.
       radius *= 1 + (rand() - 0.5) * round * 0.5;
       if (radius > farthest) break;
@@ -304,11 +584,22 @@ export function computeSignal(
           const start = s.base + s.drift * i + (ringSeed - 0.5) * 0.3;
           gaps.push({ start, end: start + Math.min(span, TAU * 0.62) });
         }
-        // A short nick now and then — the stray dashes in the reference.
-        if (rand() < 0.3) {
-          const nick = rand() * TAU;
-          gaps.push({ start: nick, end: nick + 0.04 + rand() * 0.07 });
-        }
+      }
+
+      // Hand breakage: the pen lifting for a moment, once or twice a ring.
+      // Measured in PIXELS of arc rather than radians, so a nick reads the
+      // same size on a tight inner ring as on a wide outer sweep — in radians
+      // the inner rings would gape and the outer ones would close up.
+      //
+      // Separate from Breaks, which cuts the wide quiet sectors. This is the
+      // fine interruption the card carries even where its rings run whole.
+      const nicks = NICK_MIN_PER_RING + Math.floor(rand() * 2 + radius / 340);
+      for (let g = 0; g < nicks; g++) {
+        const at = rand() * TAU;
+        const len =
+          (NICK_MIN_PX + rand() * (NICK_MAX_PX - NICK_MIN_PX)) /
+          Math.max(1, radius);
+        gaps.push({ start: at, end: at + len });
       }
 
       const inGap = (a: number) => {
@@ -410,7 +701,7 @@ function paintSignalLines(
   ctx.lineCap = fade ? "round" : "butt";
   ctx.lineJoin = "round";
 
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeFade(w, h, { ...SIGNAL_FADE, seed: fadeSeed }) : null;
   const SPREAD = 0.7;
   const denom = 1 - SPREAD;
 
@@ -467,7 +758,7 @@ export function buildSignalSVG(
   stamp?: StampOpts,
 ) {
   const f = (n: number) => Math.round(n * 100) / 100;
-  const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed }) : null;
+  const fieldFade = fade ? makeFade(w, h, { ...SIGNAL_FADE, seed: fadeSeed }) : null;
   const parts: string[] = [
     `<rect width="${w}" height="${h}" fill="${background}"/>`,
   ];

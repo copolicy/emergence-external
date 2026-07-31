@@ -26,13 +26,10 @@ import {
 
 // TEMP: extra tuning sliders for dialing in the field shape — pull these back
 // out once the look is locked in (see SLIDER_KEYS_SIMPLE for the normal set).
-const SLIDER_KEYS_TUNING: (keyof ContourParams)[] = [
-  "fieldScale",
-  "octaves",
-  "warp",
-  "fill",
-  "stamp",
-];
+// Detail and Meander are settled at zero — smooth, unwarped coastlines — with
+// Fill at 0.6 and Field Scale at 3, so those live on their DEFAULT_CONTOUR
+// values and only Stamp is still being dialled.
+const SLIDER_KEYS_TUNING: (keyof ContourParams)[] = ["stamp"];
 
 const GROWTH_MS = 3600;
 
