@@ -83,7 +83,9 @@ export const DEFAULT_JAGGED: JaggedParams = {
   // than a nicked corner, which is what makes the bundles turn like routed copper.
   corner: 40,
   facets: 2,
-  curl: 0.24,
+  // Not on the rail: how tightly the bundles coil is the vertical's look, not
+  // something to tune per composition.
+  curl: 0.45,
   switchback: 0.45,
   margin: 0.6,
   nest: 0.5,
@@ -176,7 +178,6 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
 export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
   "seed",
   "traces",
-  "curl",
   "lineWidth",
   "stamp",
   "cutout",
