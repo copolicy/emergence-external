@@ -13,7 +13,7 @@ import Network from './tools/Network';
 import RootsText from './tools/RootsText';
 
 // Host for active-tool controls — they portal into the mode-rail panel under the
-// Branch/Field (and vertical) toggles so nav + settings read as one unit.
+// Core Brand / Verticals (and vertical) toggles so nav + settings read as one unit.
 
 interface ToolDef {
   id: string;
@@ -66,7 +66,7 @@ const VERTICALS: VerticalDef[] = [
 ];
 
 export default function App() {
-  // Branch = parent brand (Root Brush). Field = pick an industry vertical.
+  // Core Brand = parent brand (Root Brush). Verticals = pick an industry vertical.
   const [family, setFamily] = useState<Family>('branch');
   const [vertical, setVertical] = useState<VerticalId>('healthcare');
   const [toolControlsHost, setToolControlsHost] = useState<HTMLElement | null>(null);
@@ -101,7 +101,7 @@ export default function App() {
             <div className="mode-rail__panel mode-rail__panel--tool">
               <div className="mode-rail__group">
                 <span className="mode-rail__label">Mode</span>
-                <div className="seg" role="group" aria-label="Branch or field">
+                <div className="seg" role="group" aria-label="Core brand or verticals">
                   {(['branch', 'field'] as Family[]).map((f) => (
                     <button
                       key={f}
@@ -110,7 +110,7 @@ export default function App() {
                       aria-pressed={f === family}
                       onClick={() => setFamily(f)}
                     >
-                      {f === 'branch' ? 'Branch' : 'Field'}
+                      {f === 'branch' ? 'Core Brand' : 'Verticals'}
                     </button>
                   ))}
                 </div>
@@ -150,7 +150,7 @@ export default function App() {
 
         <main className="app-main">
           {/* Remount on tool change so each engine resets its canvas/state cleanly.
-              Root Brush is always Organic (Branch has no Engineered brush). */}
+              Root Brush is always Organic (Core Brand has no Engineered brush). */}
           {active.id === 'root-brush' ? (
             <RootBrush
               key="root-brush"
