@@ -37,71 +37,38 @@ const JAGGED_FADE: FadeOptions = {
   endAlpha: 0.3,
 };
 
-// The trail ticks below a curtain run from a couple of pitches down to about
-// half a pitch, and `strokeFaded` drops any stroke under ten by default — which
-// culled all but the first tick or two of every trail. They are deliberate marks,
-// so the floor only needs to be low enough to keep the shortest of them.
-const JAGGED_FADE_MIN_LEN = 2;
+// The trail ticks below a curtain run from about a pitch and a half down to a
+// couple of pixels, and `strokeFaded` drops any stroke under ten by default —
+// which culled all but the first tick or two of every trail, wherever on the board
+// it sat and whether the fade reached it or not. They are deliberate marks, so the
+// floor only needs to be low enough to keep them.
+const JAGGED_FADE_MIN_LEN = 1.5;
+
+/**
+ * Optional post-scale about a focal point. Kept at 1 — magnification pushes ink
+ * off-frame and hollows the centre; the reference bleed is handled by routing
+ * entries off the edges instead.
+ */
+const JAGGED_ZOOM = 1;
+const JAGGED_FOCAL_X = 0.55;
+const JAGGED_FOCAL_Y = 0.45;
 
 // How wide a cable may grow, in trace pitches. The reference runs few cables but
 // very wide ones — a dozen or more lanes hugging the same contour — so this is
 // what makes the routing read as nested loops rather than scattered ribbons.
-// Also sets the floor on every leg length: a cable must not turn back inside its
-// own width, so the widest cable the board allows is what every straight run has
-// to clear. Set too high, a bundle could only fit two legs across the frame and
-// the routing never reached the left side at all.
-const STACK_CAP_PITCHES = 28;
+const STACK_CAP_PITCHES = 14;
 
 /** Bottom-left corner kept clear for the vertical label stack on the card. */
-const TYPE_PAD_X = 0.26;
-const TYPE_PAD_Y = 0.18;
+const TYPE_PAD_X = 0.3;
+const TYPE_PAD_Y = 0.2;
 
-/**
- * Uniformly scale the finished routing to fill the usable frame (everything
- * outside the bottom-left type pad), anchored to the top-right so it bleeds
- * the way the reference card does. Preserves 45° geometry.
- *
- * BBox is taken from on-canvas ink only — off-frame entry pads would otherwise
- * inflate the span and shrink the pattern back into the middle.
- */
-function fitJaggedToFrame(lines: FlowLine[], w: number, h: number): void {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const line of lines) {
-    for (let i = 0; i + 1 < line.pts.length; i += 2) {
-      const x = line.pts[i];
-      const y = line.pts[i + 1];
-      // On-canvas only — ignore the off-frame entry pads.
-      if (x < 0 || y < 0 || x > w || y > h) continue;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (!Number.isFinite(minX) || maxX - minX < 8 || maxY - minY < 8) return;
-
-  const targetX0 = w * 0.04;
-  const targetY0 = h * 0.01;
-  const targetX1 = w;
-  const targetY1 = h * (1 - TYPE_PAD_Y * 0.9);
-  const bw = maxX - minX;
-  const bh = maxY - minY;
-  // Contain-fit: grow to the usable frame without stretching voids apart.
-  const scale = Math.min(
-    (targetX1 - targetX0) / bw,
-    (targetY1 - targetY0) / bh,
-  );
-  if (scale < 1.02) return; // already filling — leave topology as routed
-  // Anchor top-right: pattern grows left and down into the usable area.
-  const ax = targetX1;
-  const ay = targetY0;
+function zoomJaggedLines(lines: FlowLine[], w: number, h: number): void {
+  const cx = w * JAGGED_FOCAL_X;
+  const cy = h * JAGGED_FOCAL_Y;
   for (const line of lines) {
     for (let i = 0; i < line.pts.length; i += 2) {
-      line.pts[i] = ax - (maxX - line.pts[i]) * scale;
-      line.pts[i + 1] = ay + (line.pts[i + 1] - minY) * scale;
+      line.pts[i] = cx + (line.pts[i] - cx) * JAGGED_ZOOM;
+      line.pts[i + 1] = cy + (line.pts[i + 1] - cy) * JAGGED_ZOOM;
     }
   }
 }
@@ -175,9 +142,9 @@ export interface JaggedParams extends FlowParams {
 // slider plumbing and ink treatment keep working unchanged.
 export const DEFAULT_JAGGED: JaggedParams = {
   ...DEFAULT_FLOW,
-  seed: 1,
-  spacing: 4,
-  lineWidth: 1.4,
+  seed: 23,
+  spacing: 8,
+  lineWidth: 1.5,
   widthVar: 0,
   // Barely on. The fatten pass spreads each lane toward its neighbours, and there
   // is only about `spacing - lineWidth` of gap to give away before a ribbon closes
@@ -186,19 +153,15 @@ export const DEFAULT_JAGGED: JaggedParams = {
   stamp: 0.03,
   // A leg carries a chamfer at each end, so the deeper the cut the less a run may
   // vary before the corners start clamping. Keep the variance modest at this depth.
-  jitter: 0.18,
+  jitter: 0.35,
   bundles: 120,
-  traces: 16,
-  ribbonVar: 0.1,
+  traces: 4,
+  ribbonVar: 0.42,
   // Long runs and many corners are what make a cable loop back within the frame
   // instead of crossing it once and leaving — the nested contours the reference has.
-  // Long enough to carry a cable most of the way across the frame in one leg.
-  // The reference's horizontal runs span it; the descent is spent in short jogs.
-  run: 300,
-  turns: 20,
-  // Matched to the reference card's diagonal length. Deeper cuts read as longer
-  // 45° legs; this depth sits with the handcrafted spine proportions below.
-  corner: 36,
+  run: 200,
+  turns: 18,
+  corner: 68,
   // Small against the chamfer, so the diagonal stays straight through its middle
   // and only rounds where it meets the straight. Stepping this per lane runs the
   // family from a tight knee on the inside of the turn to a long sweep on the
@@ -208,30 +171,30 @@ export const DEFAULT_JAGGED: JaggedParams = {
   // reference art, matched on how its ink divides between the straights, the 45°
   // runs and the rounding: about 71% axial, 21% diagonal, 8% fillet. Moving one
   // alone pulls that split off.
-  knee: 10,
+  knee: 12,
   // High enough that a fillet reads as a drawn arc rather than a stepped bevel.
   facets: 8,
   // Not on the rail: how tightly the bundles coil is the vertical's look, not
   // something to tune per composition.
-  curl: 0.55,
-  switchback: 0.55,
-  margin: 0.05,
+  curl: 0.86,
+  switchback: 0.6,
+  margin: 0.44,
   // High, because stacking ribbons onto a spine already down is how the board
   // reaches its density without lanes running into each other: a ribbon nesting
   // alongside cable runs parallel to it at one clearance, where one carving a
   // fresh path across a busy board mostly gets refused. It is also what builds the
   // reference's thick cables out of narrow ribbons.
-  nest: 1,
+  nest: 0.94,
   settle: 0.55,
-  fringe: 0.28,
+  fringe: 0.2,
   // A fraction of the ink's own weight, so it stays a nick in the trace at this
   // line width rather than eroding lanes away.
   cutout: 0.74,
-  drop: 0.9,
+  drop: 0.8,
   // Around three dashes past each blunt end, shortening as they go. Only lanes that
   // stopped heading straight down and with clear board below get any, so this reads
   // as the curtain dissolving into ticks rather than stippling the whole field.
-  trail: 0.7,
+  trail: 0.38,
 };
 
 export const JAGGED_RANGES: Record<
@@ -247,7 +210,7 @@ export const JAGGED_RANGES: Record<
   traces: [1, 16, 1],
   ribbonVar: [0, 1, 0.02],
   run: [20, 340, 5],
-  turns: [1, 40, 1],
+  turns: [1, 16, 1],
   corner: [0, 120, 1],
   knee: [0, 60, 1],
   facets: [1, 16, 1],
@@ -325,14 +288,10 @@ export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
 
 // ---- geometry helpers ------------------------------------------------------
 
-// How far across the board a bundle carries before it counts as settled: where it
-// gives up cornering, and where trailing-off is allowed. Shared so the two agree
-// on the boundary — the curtain and the dashes should start in the same place.
-const SETTLE_REACH = 0.88;
-
-// How far across a bundle must carry before it may settle at all. Below this it
-// keeps cornering, which is what pushes the routing past the middle of the board.
-const SETTLE_GATE = 0.52;
+// How far down the board counts as settled: where bundles give up cornering, and
+// where trailing-off is allowed. Shared so the two agree on the boundary — the
+// curtain and the dashes should start in the same place.
+const SETTLE_REACH = 0.72;
 
 // The four Manhattan directions, `d` counting clockwise from +x with y pointing
 // down, so a 90° turn is ±1 step and a reversal ±2. The walk itself is
@@ -346,29 +305,7 @@ const SETTLE_GATE = 0.52;
 const DX = [1, 0, -1, 0];
 const DY = [0, 1, 0, -1];
 const DOWN = 1; // index of +y above — the heading the composition resolves toward
-const LEFT = 2; // −x — the heading cable travels as it works in off the right edge
 const UP = 3;
-
-// How often a corner is taken in the direction the composition advances — left
-// and down — rather than by `curl`. The rest of the turns still coil, so this
-// sets how far a cable carries across the board between hooks.
-const DRIFT = 0.72;
-
-// How far in from the right edge the first corner lands, as a fraction of width.
-// The reference turns into its opening 45° almost immediately — about a tenth of
-// the way across — rather than after a long straight run.
-const FIRST_TURN_AT = 0.1;
-
-// How wide a band around the vertical midline counts as "middle" for the nested
-// U-pocket. Outside this band cables fan out; inside they fold back on themselves.
-const MID_LOOP_BAND = 0.28;
-
-// Vertical legs as a fraction of `run`. Cable travels across the board far more
-// than it travels down it, so the descent is spent in small steps.
-// Small enough that a vertical leg lands on the leg-length floor rather than
-// scaling with `run`: the descent then costs about one chamfered corner's worth
-// of height per band, which is what fits several bands into the frame.
-const VERTICAL_LEG = 0.2;
 
 function polylineLength(pts: number[]): number {
   let len = 0;
@@ -489,85 +426,6 @@ function firstBlockedLen(
 }
 
 /**
- * Handcrafted spines laid out in unit-space over the usable frame (everything
- * outside the bottom-left type pad), then mapped to pixels. Topology matches
- * VERTICAL 02 — right entry, 45° ~10% in, deep U-pocket, left curtain — but
- * every fold is positioned as a fraction of the available width/height so the
- * spiral claims the board instead of clustering on the right.
- */
-function buildReferenceSpines(
-  w: number,
-  h: number,
-  pitch: number,
-  rand: () => number,
-): number[][] {
-  const q = (v: number) => Math.round(v / pitch) * pitch;
-  const pad = pitch * 3;
-  const j = (amt: number) => (rand() - 0.5) * 2 * amt;
-
-  // Usable pixel bounds — spines are designed in 0..1 over this rect.
-  const x0 = q(Math.max(pitch * 3, w * TYPE_PAD_X * 0.55));
-  const x1 = w - pitch;
-  const y0 = pitch * 2;
-  const y1 = q(h * (1 - TYPE_PAD_Y) - pitch * 2);
-  const X = (u: number) => q(x0 + u * (x1 - x0));
-  const Y = (v: number) => q(y0 + v * (y1 - y0));
-
-  // PRIMARY SPIRAL — deep U spanning the usable width, with a tighter return
-  // so horizontal runs sit closer and claim more of the vertical space.
-  const mid = [
-    w + pad,
-    Y(0.18 + j(0.008)),
-    X(0.92),
-    Y(0.18 + j(0.008)),
-    X(0.92),
-    Y(0.02),
-    X(0.03),
-    Y(0.02),
-    X(0.03),
-    Y(0.26),
-    X(0.96),
-    Y(0.26),
-    X(0.96),
-    Y(0.48),
-    X(0.03),
-    Y(0.48),
-    X(0.03),
-    Y(1.0),
-  ];
-
-  // UPPER — top run into the curtain, outside the mid stack.
-  const upper = [
-    w + pad,
-    Y(0.08),
-    X(0.92),
-    Y(0.08),
-    X(0.92),
-    Y(0.0),
-    X(-0.02),
-    Y(0.0),
-    X(-0.02),
-    Y(1.0),
-  ];
-
-  // LOWER — bottom-right into the curtain.
-  const lower = [
-    w + pad,
-    Y(0.72),
-    X(0.92),
-    Y(0.72),
-    X(0.92),
-    Y(0.88),
-    X(0.08),
-    Y(0.88),
-    X(0.08),
-    Y(1.0),
-  ];
-
-  return [mid, upper, lower];
-}
-
-/**
  * One bundle's centre line: a walk on the Manhattan grid that enters the board and
  * takes `turns` square corners before running off an edge. Legs snap to the trace
  * pitch so bundles that meet stay in register, the way board routing does.
@@ -593,28 +451,16 @@ function buildSpine(
   // pointing the wrong way, which reads as a second, unrelated source of cable.
   let d = 2; // left→+x, top→+y, right→−x, bottom→−y
   let x = w + pad;
-  // Spread over the height, with a deliberate middle bias so the nested pocket
-  // has hosts to build on. Uniform entry left the centre empty — upper cables
-  // climbed and lower ones dropped, and nothing remained to fold in the middle.
-  let y = quant(
-    rand() < 0.55
-      ? (0.5 + (rand() - 0.5) * MID_LOOP_BAND * 2) * h
-      : rand() * h * 0.92,
-  );
+  // Spread over most of the height, biased high — the reference is densest in the
+  // top-right and thins as the routing works down and left.
+  let y = quant(rand() ** 1.3 * h * 0.94);
 
   const v = [x, y];
-  // Fan from the midline: cable that enters in the upper half coils upward
-  // first, cable that enters in the lower half coils downward. From a leftward
-  // entry, turn +1 heads UP and turn −1 heads DOWN — and the chamfer then cuts
-  // that square corner into the long 45° diagonal the reference runs.
-  //
-  // Middle-band cables always step DOWN into the pocket — fanning away from the
-  // midline here opened a V-gap in the centre, and the nested loop the reference
-  // holds never formed. One shared fold direction lets nesting stack a concentric
-  // U around the step.
-  const climbing = y < h * 0.5;
-  const midBand = Math.abs(y / h - 0.5) < MID_LOOP_BAND;
-  const turn = midBand ? -1 : climbing ? 1 : -1;
+  // Which way the coil winds. Biased so the first corner carries the bundle down,
+  // away from the edge it arrived on — with `curl` high the rest of the turns
+  // follow, and the cable nests into C-shapes that stack back toward the right
+  // instead of running straight off the far side.
+  const turn = rand() < 0.8 ? -1 : 1;
   const corners = Math.max(1, Math.round(p.turns));
   const off = (px: number, py: number) =>
     px < -pad || py < -pad || px > w + pad || py > h + pad;
@@ -628,83 +474,36 @@ function buildSpine(
   // The leg a bundle comes in on carries a chamfer at its far end only, so it
   // needs none of the clearance an interior leg does — that allowance is there so
   // a cable can turn back without meeting itself, and there is nothing behind the
-  // entry to meet.
-  //
-  // Sized so the *visible* straight before the first 45° is about a tenth of the
-  // board. The walk starts off-frame by `pad` and the chamfer eats `corner` off
-  // the far end, so both have to be added on top — without that the whole entry
-  // collapsed into the diagonal and the turn looked like it happened at the edge.
-  const entryRun = quantRun(
-    pad + p.corner + w * (FIRST_TURN_AT + (rand() - 0.5) * 0.04),
-  );
-  // After the opening fan, take one vertical step then resume LEFT. Mid-band
-  // steps are deep (the pocket); upper/lower steps are short jogs.
-  let stepThenLeft = 1;
+  // entry to meet. Held to the full `minRun` it ringed the board with straight
+  // runs, every cable travelling a good way in before it turned anything; the
+  // reference starts turning close to the edge it came in on.
+  const entryFloor = quantRun(p.corner + pitch * 2);
 
   for (let i = 0; i < corners; i++) {
     const vary = 1 + (rand() - 0.5) * 2 * Math.min(1, p.jitter);
     // A bundle cannot turn back inside its own width, so no interior run is
     // shorter than the cable is wide — the same constraint a real board has.
-    // Vertical legs run much shorter than horizontal ones. The walk advances left
-    // by alternating a run across with a jog down, so a full-length vertical leg
-    // spent the whole height of the board on two or three steps and the routing
-    // never got past the middle. Short jogs are also what the reference does: long
-    // horizontal cable, a small step down, more horizontal cable.
-    const vertical = d === DOWN || d === UP;
-    // Vertical jogs are short steps between long horizontal runs. Held to the full
-    // `minRun` (which clears `2·corner`) they ate most of the board's height in
-    // one step and walked off the top or bottom before ever crossing left — so
-    // the floor for a vertical leg is just enough for the chamfer to land, not
-    // the full turn-back clearance a horizontal U needs.
-    const vertFloor = quantRun(p.corner + pitch * 2);
-    // Mid-band step is deeper so nested ribbons around it read as the pocket.
-    const loopDepth = quantRun(Math.max(cross * 2, w * 0.18));
-    let len =
+    const len =
       pairLeft > 0
         ? quantRun(cross)
         : i === 0
-          ? entryRun
-          : vertical
-            ? stepThenLeft > 0 && midBand
-              ? loopDepth
-              : Math.max(vertFloor, quantRun(p.run * vary * VERTICAL_LEG))
-            : Math.max(minRun, quantRun(p.run * vary));
-    // Opening vertical step must stay on the board — walking off the top or
-    // bottom here aborted the spine before it could turn back onto LEFT, which
-    // is why every band exited the near edge instead of crossing the frame.
-    if (vertical && stepThenLeft > 0) {
-      const room =
-        d === UP ? y - pad : d === DOWN ? h + pad - y : len;
-      len = quantRun(Math.max(vertFloor, Math.min(len, room)));
-    }
+          ? Math.max(entryFloor, quantRun(p.run * vary * 0.45))
+          : Math.max(minRun, quantRun(p.run * vary));
     x += DX[d] * len;
     y += DY[d] * len;
     v.push(x, y);
-    if (stepThenLeft > 0 && vertical) {
-      // Back onto LEFT and skip settle/turn so the next leg is the crossing run.
-      d = LEFT;
-      stepThenLeft = 0;
-      continue;
-    }
     if (i >= 1 && off(x, y)) break;
-    // Composition bias. Cable arrives on the right and the board resolves leftward
-    // into descending lanes that trail off along the bottom, so a bundle stops
-    // cornering and runs straight down once it has carried far enough across.
+    // Composition bias. The board resolves from dense cornered routing up on the
+    // right into descending lanes that trail off along the bottom, so a bundle
+    // stops cornering and runs straight down once it has worked its way low —
+    // the tail of the run rather than more routing.
     //
-    // Gated on how far it has travelled from the edge it came in on, not on depth
-    // alone: keyed on depth, a bundle entering low on the right settled on its
-    // first corner and dropped straight off the bottom, so nothing ever reached
-    // the left half at all. Depth only weights it, so the ends still gather low.
-    // Hard gate before the ramp. On a plain ramp the odds were already meaningful
-    // at the halfway mark and, compounded over every corner, near-certain to fire
-    // there — so cable curtained in the middle and the left of the board stayed
-    // bare. Nothing may settle until it has carried past `SETTLE_GATE`.
-    const travelled = Math.max(0, 1 - x / w);
-    const settled =
-      travelled < SETTLE_GATE
-        ? 0
-        : Math.min(1, (travelled - SETTLE_GATE) / (SETTLE_REACH - SETTLE_GATE)) *
-          (0.45 + 0.55 * Math.min(1, y / h));
+    // Keyed mostly on depth, with a mild leftward lean. On x alone the curtain
+    // hung as a wall down one side wherever a bundle happened to be; on depth it
+    // gathers along the underside of the board, which is where the reference's
+    // ends and ticks are.
+    const depth = Math.min(1, (y / h) / SETTLE_REACH);
+    const settled = depth * (0.55 + 0.45 * Math.max(0, 1 - x / w));
     // A bundle already heading up cannot swing straight down here: that is a 180°
     // reversal, and `offsetPath`'s mitre degenerates there — every lane in the
     // ribbon lands on the same point and the bundle fans out from a spearhead
@@ -732,44 +531,12 @@ function buildSpine(
     // compose two steps into a reversal; the U of a switchback is built from two
     // separate 90° corners with a leg between them, which is how board routing
     // doubles back.
-    // First corner always fans away from the midline — upper half UP, lower half
-    // DOWN — so the 45° cut off that turn is the reference's opening diagonal.
-    // Middle-band cables then step deep and resume LEFT, which is the pocket
-    // nesting builds on. Later corners keep the preferred sign for switchbacks
-    // and curl, and DRIFT re-checks height so a band that crosses the middle
-    // flips with it.
-    if (i === 0) {
-      d = (d + turn + 4) % 4;
-    } else if (pairLeft > 0) {
+    if (pairLeft > 0) {
       d = (d + turn + 4) % 4;
       pairLeft--;
-    } else if (rand() < (midBand ? Math.max(p.switchback, 0.7) : p.switchback)) {
+    } else if (rand() < p.switchback) {
       d = (d + turn + 4) % 4;
       pairLeft = 1;
-    } else if (rand() < DRIFT) {
-      // Advance across the board, and vertically *away from the middle*: cable in
-      // the top half climbs, cable in the bottom half descends. Cable arrives on
-      // the right, so without this the walk just coils where it landed — `curl`
-      // spirals it in place and the whole board fits in the right-hand third.
-      //
-      // Turning down everywhere drained the board toward the bottom and left the
-      // upper half bare. Fanning out from the midline instead spreads the bands
-      // over the full height, and the chamfer turns each of those steps into the
-      // long 45° diagonals the reference runs.
-      const nowClimbing = y < h * 0.5;
-      const advance =
-        d === DOWN || d === UP
-          ? d === DOWN
-            ? 1
-            : -1 // vertical leg — corner back onto the traverse
-          : d === LEFT
-            ? nowClimbing
-              ? 1
-              : -1
-            : nowClimbing
-              ? -1
-              : 1;
-      d = (d + advance + 4) % 4;
     } else {
       const sign = rand() < 0.5 + 0.5 * p.curl ? turn : -turn;
       d = (d + sign + 4) % 4;
@@ -1173,14 +940,11 @@ function trailDashes(
   if (uy < 0.95 || Math.abs(ux) > 0.15) return [];
 
   const out: FlowLine[] = [];
-  // Sized to read as clear trail ticks on the card — about two pitches long at
-  // the first dash, shortening gently. The old 1.3·pitch start collapsed into
-  // sub-pixel stubs after a couple of shrinks.
-  let dash = pitch * 2.4;
-  let gap = pitch * 1.15;
+  let dash = pitch * 1.3;
+  let gap = pitch * 0.9;
   // Scaled straight off the slider with no floor, so a low value really means no
   // trail. A floor here left stray ticks behind at settings meant to switch it off.
-  const steps = Math.round(trail * 8);
+  const steps = Math.round(trail * 9);
   for (let i = 0; i < steps; i++) {
     x += ux * gap;
     y += uy * gap;
@@ -1196,9 +960,9 @@ function trailDashes(
     out.push({ pts: [x, y, ex, ey], w: weight, order, arrow: false });
     x = ex;
     y = ey;
-    dash *= 0.82;
-    gap *= 1.12;
-    if (dash < pitch * 0.45) break;
+    dash *= 0.74;
+    gap *= 1.18;
+    if (dash < pitch * 0.16) break;
   }
   return out;
 }
@@ -1385,181 +1149,6 @@ export function computeJagged(
   }
   const routed: Routed[] = [];
 
-  // Lay the reference card's spines down first as hosts. Nesting then stacks
-  // ribbons onto them, which is how the board reaches the dense parallel cables
-  // the card shows without the walk having to rediscover that topology by chance.
-  {
-    const refs = buildReferenceSpines(w, h, pitch, rand);
-    for (const walk of refs) {
-      if (placed >= want) break;
-      const spine = chamferSpine(walk, p.corner, gap);
-      if (spine.length < 6) continue;
-      const turnSigns = spineTurnSigns(spine);
-      const base = p.knee;
-      // Mid spiral gets a wide ribbon; force-nest below grows it to fill space.
-      // Too many lanes at once reverse inside the U and the whole host is refused.
-      const isMid = walk.length >= 16;
-      const isLower = !isMid && walk[1] > h * 0.5;
-      const count = Math.max(
-        isMid ? 18 : isLower ? 10 : 8,
-        Math.round(widest * (isMid ? 1.4 : isLower ? 1.0 : 0.85) + rand()),
-      );
-      const halfSpan = ((count - 1) / 2) * pitch;
-      const batch: FlowLine[] = [];
-      for (let k = 0; k < count; k++) {
-        const t = (k - (count - 1) / 2) * pitch;
-        const parallel = trimReversed(spine, offsetPath(spine, t));
-        if (parallel.length < 4) continue;
-        const cornered = facetCorners(
-          parallel,
-          turnSigns,
-          base,
-          t,
-          p.facets,
-          gap,
-          pitch * 0.4,
-        );
-        let kept = clipToBoard(cornered, w, h);
-        if (kept.length < 4) continue;
-        const cutAt = firstBlockedLen(kept, step, blocked);
-        if (Number.isFinite(cutAt)) kept = truncateAt(kept, cutAt);
-        // Light fringe on hosts only — heavy cuts hollow the concentric U the
-        // reference fills. Trails still form from natural occupancy stops.
-        if (kept.length >= 4 && p.fringe > 0 && rand() < p.fringe * 0.45) {
-          const full = polylineLength(kept);
-          const spans = descendingSpans(kept, pitch * 1.5).filter(
-            (s) => s.from >= full * 0.55,
-          );
-          if (spans.length) {
-            let drip: Drop = spans[Math.floor(rand() * spans.length)];
-            if (p.drop > 0 && rand() < p.drop) {
-              for (const s of spans) if (s.y > drip.y) drip = s;
-            }
-            kept = truncateAt(
-              kept,
-              drip.from + (drip.to - drip.from) * (0.35 + rand() * 0.65),
-            );
-          }
-        }
-        if (kept.length < 4 || polylineLength(kept) < minLane) continue;
-        batch.push({
-          pts: kept,
-          w: Math.max(0.15, p.lineWidth),
-          order: placed,
-          arrow: false,
-        });
-      }
-      if (batch.length < Math.min(4, count)) continue;
-      const trails: FlowLine[] = [];
-      if (p.trail > 0) {
-        for (let bi = 0; bi < batch.length; bi++) {
-          const siblings = batch
-            .filter((_, i) => i !== bi)
-            .map((l) => l.pts)
-            .concat(trails.map((t) => t.pts));
-          trails.push(
-            ...trailDashes(
-              batch[bi].pts,
-              batch[bi].w,
-              placed,
-              pitch,
-              p.trail,
-              h * SETTLE_REACH * 0.6,
-              w,
-              h,
-              blocked,
-              (x, y) => siblings.some((o) => nearPolyline(o, x, y, clear)),
-            ),
-          );
-        }
-      }
-      for (const line of batch) markPolyline(line.pts);
-      for (const t of trails) markPolyline(t.pts);
-      lines.push(...batch, ...trails);
-      routed.push({
-        spine,
-        signs: turnSigns,
-        base,
-        lo: -halfSpan,
-        hi: halfSpan,
-      });
-      placed++;
-    }
-
-    // Force-nest thin ribbons onto each host until the stack is full — this is
-    // what fills the concentric U across the usable frame. Prefer the longest
-    // (mid spiral) host so space fills from the pocket outward.
-    const hostsByLen = [...routed].sort((a, b) => b.spine.length - a.spine.length);
-    for (const host of hostsByLen) {
-      for (let grow = 0; grow < 36 && host.hi - host.lo < stackCap; grow++) {
-        const n = 1 + Math.floor(rand() * 2);
-        const half = ((n - 1) / 2) * pitch;
-        const side = grow % 2 === 0 ? 1 : -1;
-        const lateral =
-          side > 0 ? host.hi + pitch + half : host.lo - pitch - half;
-        if (Math.abs(lateral) + half > stackCap * 0.55) break;
-        const batch: FlowLine[] = [];
-        for (let k = 0; k < n; k++) {
-          const t = lateral + (k - (n - 1) / 2) * pitch;
-          const parallel = trimReversed(host.spine, offsetPath(host.spine, t));
-          if (parallel.length < 4) continue;
-          const cornered = facetCorners(
-            parallel,
-            host.signs,
-            host.base,
-            t,
-            p.facets,
-            gap,
-            pitch * 0.4,
-          );
-          let kept = clipToBoard(cornered, w, h);
-          if (kept.length < 4) continue;
-          const cutAt = firstBlockedLen(kept, step, blocked);
-          if (Number.isFinite(cutAt)) kept = truncateAt(kept, cutAt);
-          // Keep long-enough lanes even if shorter than a full traverse — outer
-          // concentric rings still fill the pocket.
-          if (kept.length < 4 || polylineLength(kept) < minLane * 1.5) continue;
-          batch.push({
-            pts: kept,
-            w: Math.max(0.15, p.lineWidth),
-            order: placed,
-            arrow: false,
-          });
-        }
-        if (!batch.length) continue;
-        const trails: FlowLine[] = [];
-        if (p.trail > 0) {
-          for (let bi = 0; bi < batch.length; bi++) {
-            const siblings = batch
-              .filter((_, i) => i !== bi)
-              .map((l) => l.pts)
-              .concat(trails.map((t) => t.pts));
-            trails.push(
-              ...trailDashes(
-                batch[bi].pts,
-                batch[bi].w,
-                placed,
-                pitch,
-                p.trail,
-                h * SETTLE_REACH * 0.6,
-                w,
-                h,
-                blocked,
-                (x, y) => siblings.some((o) => nearPolyline(o, x, y, clear)),
-              ),
-            );
-          }
-        }
-        for (const line of batch) markPolyline(line.pts);
-        for (const t of trails) markPolyline(t.pts);
-        lines.push(...batch, ...trails);
-        host.lo = Math.min(host.lo, lateral - half);
-        host.hi = Math.max(host.hi, lateral + half);
-        placed++;
-      }
-    }
-  }
-
   for (let a = 0; a < attempts && placed < want; a++) {
     // Ribbon width: `traces` is the widest bundle, `ribbonVar` how far the rest
     // fall short of it — the mix of fat and thin cable the reference runs.
@@ -1585,10 +1174,7 @@ export function computeJagged(
 
     let host: Routed | null = null;
     let lateral = 0;
-    // Once the reference hosts are down, nest onto them exclusively — fresh
-    // generative spines fight the card's topology and hollow the middle.
-    const nestChance = routed.length >= 3 ? 1 : p.nest;
-    if (routed.length && rand() < nestChance) {
+    if (routed.length && rand() < p.nest) {
       // Stacking is how the board reaches its density: a ribbon nesting alongside
       // cable already down runs parallel to it at one clearance and so survives
       // intact, where one carving its own path across a full board is usually
@@ -1598,16 +1184,11 @@ export function computeJagged(
       // never grew to their full width.
       const open = routed.filter((r) => r.hi - r.lo < stackCap);
       if (open.length) {
-        // Prefer mid-loop hosts (longer spines) so the U fills concentrically.
-        open.sort((a, b) => b.spine.length - a.spine.length);
-        host = open[Math.floor(rand() * Math.min(3, open.length))];
+        host = open[Math.floor(rand() * open.length)];
         lateral =
           rand() < 0.5
             ? host.hi + pitch + halfSpan
             : host.lo - pitch - halfSpan;
-      } else if (routed.length >= 3) {
-        // All reference hosts are full — stop rather than inventing new spines.
-        break;
       }
     }
 
@@ -1799,7 +1380,7 @@ export function computeJagged(
 
   const denom = Math.max(1, placed - 1);
   for (const line of lines) line.order = line.order / denom;
-  fitJaggedToFrame(lines, w, h);
+  zoomJaggedLines(lines, w, h);
   return lines;
 }
 

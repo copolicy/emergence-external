@@ -1,3 +1,5 @@
+import { MP4_EXPORT_ENABLED } from "../featureFlags";
+
 interface RecordButtonProps {
   /** True while recording — flips the control to a "stop" affordance. */
   recording: boolean;
@@ -32,6 +34,9 @@ const StopIcon = () => (
  * Shared MP4 download control for tools with a play/grow animation. Captures the
  * canvas as a standard MP4 while the animation runs. Pairs with
  * {@link useCanvasRecorder}.
+ *
+ * Gated behind the `MP4_EXPORT_ENABLED` flag, so this renders nothing for every
+ * tool unless `VITE_FEATURE_MP4_EXPORT` is set.
  */
 export default function RecordButton({
   recording,
@@ -42,7 +47,7 @@ export default function RecordButton({
   onStop,
   onClick,
 }: RecordButtonProps) {
-  if (!supported) return null;
+  if (!MP4_EXPORT_ENABLED || !supported) return null;
 
   if (recording) {
     // Capture renders every frame at export resolution, so it can run slower
