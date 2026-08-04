@@ -28,8 +28,7 @@ export interface SignalParams {
 }
 
 export const DEFAULT_SIGNAL: SignalParams = {
-  // Mid-range on purpose, so the slider scrubs both ways off the default.
-  seed: 15,
+  seed: 60,
   // Fixed at the card's composition — the hero with its nest of small circles,
   // and two larger companions parked on the right edge. Not on the rail: the
   // count is part of the vertical's look, not a knob.
@@ -84,7 +83,7 @@ export const SIGNAL_LABELS: Record<keyof SignalParams, string> = {
 };
 
 export const SIGNAL_HINTS: Record<keyof SignalParams, string> = {
-  seed: "Which nest of smaller circles to draw inside the hero. The big circle stays put; scrub the slider to rearrange the ones inside it.",
+  seed: "Rotates the two smaller circles inside the hero clockwise, as a pair. The big circle stays put.",
   centers:
     "How many circle families are on the canvas. The nest of small circles and the hero always draw; anything past that parks larger companions on the right edge of the frame.",
   rings: "How many concentric rings each circle family draws.",
@@ -281,22 +280,18 @@ const NEST_SIBLING_SIZE = 0.24;
 const NEST_SIBLING_RINGS = 0.4;
 
 /**
- * Reference card — four circles stacked through the hero's open core on a
+ * Reference card — two circles stacked through the hero's open core on a
  * mostly vertical column. Rings are meant to interleave, so clearance is
  * measured on a CORE fraction of each outer radius — enough that two members
- * never share a centre, not so much that four full discs refuse to fit.
+ * never share a centre.
  */
 const CLUSTER_CORE_FRAC = 0.55;
 const CLUSTER_CLEARANCE = 0.18;
-/** How far the column may lean off the hero's vertical, as a fraction of reach. */
+/** How far the pair leans off its local axis, as a fraction of reach. */
 const CLUSTER_LEAN = 0.22;
-/** Per-member left/right drift off the column, as a fraction of reach. */
-const CLUSTER_DRIFT_X = 0.1;
 const CLUSTER_SPECS: { sizeK: number; ringShare: number }[] = [
   { sizeK: 1, ringShare: 0.35 },
-  { sizeK: 2.2, ringShare: NEST_SIBLING_RINGS },
   { sizeK: 2.8, ringShare: NEST_SIBLING_RINGS },
-  { sizeK: 3.2, ringShare: NEST_SIBLING_RINGS * 0.88 },
 ];
 /** Inset from the hero's outer ring when tucking a cluster member inside it. */
 const HERO_NEST_MARGIN = 0.1;
@@ -354,7 +349,8 @@ function clearOfSiblings(
       if (dist >= minD) continue;
       if (preferVertical) {
         // Hold X near where it was dealt; make up the rest of the gap in Y.
-        const holdX = Math.abs(dx) < minD ? dx : Math.sign(dx || 1) * minD * 0.35;
+        const holdX =
+          Math.abs(dx) < minD ? dx : Math.sign(dx || 1) * minD * 0.35;
         const yNeed = Math.sqrt(Math.max(0, minD * minD - holdX * holdX));
         const signY =
           Math.abs(dy) < 1e-6 ? (iter % 2 === 0 ? 1 : -1) : Math.sign(dy);
@@ -404,10 +400,7 @@ function seatNestMember(
       CLUSTER_CORE_FRAC,
       preferVertical,
     );
-    if (
-      Math.hypot(cleared.x - cur.x, cleared.y - cur.y) < 0.5 &&
-      iter > 0
-    ) {
+    if (Math.hypot(cleared.x - cur.x, cleared.y - cur.y) < 0.5 && iter > 0) {
       cur = cleared;
       break;
     }
@@ -492,6 +485,7 @@ function placeCenters(
   rand: () => number,
   spacing: number,
   ringCount: number,
+  seed: number,
 ): Center[] {
   const min = Math.min(w, h);
 
@@ -525,8 +519,14 @@ function placeCenters(
   // whole on short canvases.
   const heroR = heroTargetRadius(w, h);
   const anchorPad = heroR + spacing * 0.15;
-  const anchorX = Math.min(Math.max(w * HERO_ANCHOR_X, anchorPad), w - anchorPad);
-  const anchorY = Math.min(Math.max(h * HERO_ANCHOR_Y, anchorPad), h - anchorPad);
+  const anchorX = Math.min(
+    Math.max(w * HERO_ANCHOR_X, anchorPad),
+    w - anchorPad,
+  );
+  const anchorY = Math.min(
+    Math.max(h * HERO_ANCHOR_Y, anchorPad),
+    h - anchorPad,
+  );
 
   // Every in-frame center placed so far, with the reach of its outermost ring.
   const inFrame: { x: number; y: number; r: number }[] = [];
@@ -546,18 +546,20 @@ function placeCenters(
 
     if (i === 0) {
       const clusterStep = step * CLUSTER_SIZE;
-      const grow = 0.2 + rand() * 0.25;
+      const grow = 0.32;
       const framePad = spacing * 0.15;
-      // Vertical column through the hero. Seed picks a light lean left or
-      // right and how tall the stack runs — the members stay lined up rather
-      // than fanning across the interior.
-      const innerReach = heroOuterEstimate * (0.52 + rand() * 0.26);
-      const lean =
-        (rand() < 0.5 ? -1 : 1) * CLUSTER_LEAN * (0.35 + rand() * 0.65);
-      const colX = anchorX + heroOuterEstimate * lean;
-      const ySpan = innerReach * (1.15 + rand() * 0.35);
-      const yStart = anchorY - ySpan * 0.5;
-      const yStep =
+      // Rigid pair in local space, then spun around the hero. Geometry is
+      // fixed so scrubbing seed reads as a clean clockwise turn, not a reshuffle.
+      const pairAng = (-((((seed - 1) % 60) + 60) % 60) / 60) * TAU;
+      const cosA = Math.cos(pairAng);
+      const sinA = Math.sin(pairAng);
+      const innerReach = heroOuterEstimate * 0.62;
+      const lean = CLUSTER_LEAN * 0.4;
+      // Slightly tighter so the lower member sits a bit higher in the hero.
+      const ySpan = innerReach * 0.95;
+      // Bias down the local axis so the "top" member sits nearer the centre.
+      const localY0 = -ySpan * 0.22;
+      const localYStep =
         CLUSTER_SPECS.length > 1 ? ySpan / (CLUSTER_SPECS.length - 1) : 0;
 
       const placed: { x: number; y: number; r: number }[] = [];
@@ -567,11 +569,11 @@ function placeCenters(
         const stepMul =
           clusterStep * (1 + NEST_SIBLING_SIZE * Math.max(0, spec.sizeK - 1));
         const cr = outerRadius(stepMul, 0.5, grow, spec.ringShare);
-        const cx =
-          colX +
-          heroOuterEstimate * CLUSTER_DRIFT_X * (rand() - 0.5) * 2;
-        const cy =
-          yStart + yStep * p + innerReach * 0.06 * (rand() - 0.5);
+        const localX = lean * heroOuterEstimate;
+        const localY = localY0 + localYStep * p;
+        // Clockwise rotation about the hero.
+        const cx = anchorX + cosA * localX + sinA * localY;
+        const cy = anchorY - sinA * localX + cosA * localY;
         const seated = seatNestMember(
           cx,
           cy,
@@ -582,7 +584,7 @@ function placeCenters(
           heroNestMargin,
           placed,
           { w, h, pad: framePad },
-          true,
+          false,
         );
         out.push({
           x: seated.x,
@@ -648,7 +650,7 @@ function placeCenters(
           heroNestMargin,
           nestPlaced,
           { w, h, pad: spacing * 0.15 },
-          true,
+          false,
         );
         c.x = seated.x;
         c.y = seated.y;
@@ -667,10 +669,13 @@ function placeCenters(
     const t = rightCount === 1 ? 0.45 : rightIndex / (rightCount - 1);
     const targetX =
       w +
-      min *
-        (RIGHT_OUTSET_MIN +
-          rand() * (RIGHT_OUTSET_MAX - RIGHT_OUTSET_MIN));
-    const targetY = h * (0.24 + t * 0.52) + (rand() - 0.5) * h * 0.05;
+      min * (RIGHT_OUTSET_MIN + rand() * (RIGHT_OUTSET_MAX - RIGHT_OUTSET_MIN)) -
+      // Nudge the upper companion in from the edge a touch.
+      (rightIndex === 0 ? min * 0.11 : 0);
+    // Upper sits a bit higher; lower stays mid-right.
+    const targetY =
+      h * ((rightIndex === 0 ? 0.13 : 0.24) + t * 0.38) +
+      (rand() - 0.5) * h * 0.05;
     const x = anchorX + (targetX - anchorX) / SIGNAL_ZOOM;
     const y = anchorY + (targetY - anchorY) / SIGNAL_ZOOM;
     out.push({
@@ -722,6 +727,7 @@ export function computeSignal(
     rand,
     baseStep,
     ringCount,
+    p.seed,
   );
   const pad = p.lineWidth + 4;
   const fit =
@@ -753,7 +759,7 @@ export function computeSignal(
         margin,
         nestPlaced,
         undefined,
-        true,
+        false,
       );
       c.x = seated.x;
       c.y = seated.y;

@@ -111,6 +111,8 @@ export interface JaggedParams extends FlowParams {
   facets: number; // straight faces per fillet — 1 nicks the knee, high counts read as an arc
   curl: number; // 0..1 how strongly a bundle keeps turning the same way
   switchback: number; // 0..1 how often a turn becomes a 180° U instead of one corner
+  coil: number; // 0..1 how often a cable winds inward on shrinking legs into a
+                // nested spiral, rather than carrying on across the board
   margin: number; // 0..1 keep-out down the left edge, widening toward the bottom
   nest: number; // 0..1 how often a bundle routes alongside one already placed
   settle: number; // 0..1 how strongly bundles stop cornering and run straight down
@@ -141,6 +143,7 @@ export const DEFAULT_JAGGED: JaggedParams = {
   facets: 8,
   curl: 0.4,
   switchback: 0.45,
+  coil: 0,
   margin: 0.1,
   nest: 0.75,
   settle: 0.55,
@@ -169,6 +172,7 @@ export const JAGGED_RANGES: Record<
   facets: [1, 16, 1],
   curl: [0, 1, 0.02],
   switchback: [0, 1, 0.02],
+  coil: [0, 1, 0.02],
   margin: [0, 1, 0.02],
   nest: [0, 1, 0.02],
   settle: [0, 1, 0.02],
@@ -192,6 +196,7 @@ export const JAGGED_LABELS: Record<keyof JaggedParams, string> = {
   facets: "Knee Steps",
   curl: "Curl",
   switchback: "Switchback",
+  coil: "Coil",
   margin: "Left Margin",
   nest: "Nest",
   settle: "Settle",
@@ -296,6 +301,63 @@ const MID_LOOP_BAND = 0.28;
 // of height per band, which is what fits several bands into the frame.
 // Slightly longer vertical jogs so up/down 45° turns claim more height.
 const VERTICAL_LEG = 0.28;
+
+// A coil is a run of same-signed corners whose legs shrink, so the cable winds
+// inward to a small core instead of closing a rectangle and stopping.
+//
+// The shrink is the whole mechanism. `curl` alone only biases which way a corner
+// turns; with every leg the same length the walk closes a loop back onto its own
+// path, `trimSelfCrossing` cuts it at the corner before it meets itself, and no
+// amount of curl or switchback produces a second turn inward.
+//
+// A rectangular spiral insets by a fixed amount per corner, not by a fixed ratio.
+// Each leg is shorter than the one before by `minSep · COIL_INSET`, and that inset
+// *is* the gap between successive parallel legs — so it has to clear the bundle's
+// own width or `trimSelfCrossing` cuts the coil on its first lap. Tying it to
+// `minSep` makes the tightest legal spiral for whatever ribbon width is in play.
+//
+// A multiplicative shrink cannot do this: the inset it produces is proportional to
+// the current leg, so it is generous at the outside and collapses below the ribbon
+// width by the time the coil is halfway in, which capped every coil at about five
+// legs however the factor was set.
+// Clearance on the inward step, over the ribbon's own width. Only a little: the
+// step *is* the gap between neighbouring laps, so every unit of slack here costs
+// laps directly. `minSep` already carries a pitch of margin over the ribbon.
+//
+// Folding `corner` into this was wrong and cost most of the coiling — a chamfer
+// cuts the corner back *along* both legs, inside the ribbon's envelope, so it
+// never pushes a lane wider than the ribbon and needs no allowance here. With it
+// in, the step came to 78px against a 219px opening leg and a 94px floor, which
+// left room for 1.6 corners: coils completed one leg and stopped.
+const COIL_INSET = 1.06;
+// Opening leg of a coil, as a fraction of board width. Pinned to the board rather
+// than to `minRun`, because a multiple of `minRun` scales the box with the ribbon
+// at the same rate as the inward step and the lap count then never moves.
+//
+// Laps ≈ `COIL_SPAN · w / (minSep · COIL_INSET) / 4`. That is a hard geometric
+// budget: a coil is a box packed with concentric ribbons, so 3–5 laps needs the
+// ribbon narrow relative to the board — there is no setting that gets deep nesting
+// out of a wide ribbon.
+const COIL_SPAN = 0.66;
+// Coils are only started right of this fraction of the width. The left of the
+// board is the curtain and the type — a coil there would fill the space the
+// composition is meant to leave open.
+const COIL_ZONE = 0.34;
+// A coil needs a box, not just a corner. Unless this much of the board is clear in
+// every direction the walk skips it — coils were firing with a mean of 129px of
+// room on a 680px board, so they had space for a single leg.
+const COIL_ROOM = 0.3;
+// Share of the bundle budget spent laying coils down first, before the board fills.
+// After this the coil probability is cut right back, so the remaining bundles are
+// the traverses and the curtain that route around what the coils already claimed.
+const COIL_FIRST = 0.4;
+
+// Left of this fraction of the width is the curtain: the one region where a trace
+// may stop short, fray, or dissolve into dashes. Right of it every trace has to
+// either leave the frame or finish its turn — the reference's right side has no
+// stubs and no half-completed hairpins anywhere, and a bundle that cannot manage
+// that is refused rather than laid down broken.
+const CURTAIN_ZONE = 0.4;
 
 function polylineLength(pts: number[]): number {
   let len = 0;
@@ -559,6 +621,7 @@ function buildSpine(
   p: JaggedParams,
   rand: () => number,
   minRun: number,
+  minSep: number,
 ): number[] {
   const pitch = Math.max(3, p.spacing);
   const pad = pitch * 3;
@@ -598,6 +661,15 @@ function buildSpine(
   // the turns still owed to one, and forces the leg between them short and
   // orthogonal so the U actually closes.
   let pairLeft = 0;
+  // Corners still owed to the current coil, and the length of its next leg. While
+  // `coilLeft` is set the walk takes every corner the same way on a shrinking leg,
+  // which is what winds it inward.
+  let coilLeft = 0;
+  let coilLen = 0;
+  // Inward step per corner — the gap the coil leaves between its own parallel
+  // legs, so it need only clear the ribbon's width. `minSep` is that width plus a
+  // pitch of margin already.
+  const coilStep = minSep * COIL_INSET;
   // After a mid-band ∪ bottom (heading RIGHT): climb once, then head left.
   // 2 = UP, 1 = LEFT. No right-then-down after the climb — that spiraled.
   let hookPhase = 0;
@@ -637,7 +709,9 @@ function buildSpine(
     // Mid-band step is deeper so nested ribbons around it read as the pocket.
     const loopDepth = quantRun(Math.max(cross * 2, w * 0.2));
     let len =
-      pairLeft > 0
+      coilLeft > 0
+        ? Math.max(minRun, quantRun(coilLen))
+        : pairLeft > 0
         ? quantRun(cross)
         : i === 0
           ? entryRun
@@ -651,14 +725,14 @@ function buildSpine(
     // Opening vertical step must stay on the board — walking off the top or
     // bottom here aborted the spine before it could turn back onto LEFT, which
     // is why every band exited the near edge instead of crossing the frame.
-    if (vertical && stepThenLeft > 0) {
+    if (vertical && stepThenLeft > 0 && coilLeft === 0) {
       const room = d === UP ? y - pad : d === DOWN ? h + pad - y : len;
       len = quantRun(Math.max(vertFloor, Math.min(len, room)));
     }
     x += DX[d] * len;
     y += DY[d] * len;
     v.push(x, y);
-    if (stepThenLeft > 0 && vertical) {
+    if (stepThenLeft > 0 && vertical && coilLeft === 0) {
       // Back onto LEFT and skip settle/turn so the next leg is the crossing run.
       d = LEFT;
       stepThenLeft = 0;
@@ -697,6 +771,7 @@ function buildSpine(
     if (
       pairLeft === 0 &&
       hookPhase === 0 &&
+      coilLeft === 0 &&
       p.settle > 0 &&
       d !== UP &&
       rand() < p.settle * settled
@@ -725,6 +800,46 @@ function buildSpine(
     // flips with it.
     if (i === 0) {
       d = (d + turn + 4) % 4;
+    } else if (coilLeft > 0) {
+      // Winding: same direction every corner, each leg shorter than the last. Once
+      // the legs tighten past the bundle's own width `trimSelfCrossing` cuts the
+      // spine, which ends the coil on a tight core rather than letting it cross
+      // its own lanes.
+      d = (d + turn + 4) % 4;
+      coilLen -= coilStep;
+      coilLeft--;
+      if (coilLen < minRun) coilLeft = 0; // reached the core
+    } else if (
+      p.coil > 0 &&
+      x > w * COIL_ZONE &&
+      pairLeft === 0 &&
+      hookPhase === 0 &&
+      // A coil needs a whole box clear around it, not just somewhere to put one
+      // leg. Gated on `minRun` alone this passed with ~129px of room on a 680px
+      // board and every coil died after a single leg.
+      Math.min(x, w - x, y, h - y) > Math.min(w, h) * COIL_ROOM &&
+      rand() < p.coil
+    ) {
+      // Start a coil here instead of carrying on across the board. This is the
+      // "notch around again" — the cable hooks back and wraps rather than running
+      // straight out into the curtain.
+      // Size the spiral to the room it actually has. A coil turns perpendicular to
+      // the heading it was travelling, so an opening leg picked from the board width
+      // alone overruns the *height* from a mid-board start — the walk leaves the
+      // frame on its first coil leg and the spine ends there, which is why the
+      // winding stayed pinned however the inset or the ribbon was tuned.
+      // The opening leg has to *fit* the room, not exceed it: the coil turns
+      // perpendicular and walks `coilLen` before it turns again, so anything past
+      // the nearest edge leaves the frame and ends the spine on its first leg.
+      const room = Math.min(x, w - x, y, h - y);
+      coilLen = Math.min(w * COIL_SPAN, room * 0.95);
+      // Enough corners to wind from the opening leg down to the floor; the
+      // `coilLen < minRun` check above ends it at the core either way.
+      coilLeft = Math.max(2, Math.ceil((coilLen - minRun) / coilStep));
+      stepThenLeft = 0;
+      d = (d + turn + 4) % 4;
+      coilLen -= coilStep;
+      coilLeft--;
     } else if (stepThenLeft > 0 && (d === LEFT || d === 0)) {
       // Queued jog: leave the horizontal and step up or down for another 45°.
       const nowClimbing = y < h * 0.5;
@@ -788,7 +903,12 @@ function buildSpine(
  * board. Points close together *along* the path are ignored, so ordinary
  * corners survive.
  */
-function trimSelfCrossing(v: number[], minSep: number, step: number): number[] {
+function trimSelfCrossing(
+  v: number[],
+  minSep: number,
+  step: number,
+  ribbon: number,
+): number[] {
   const n = v.length / 2;
   if (n < 4) return v;
   const sx: number[] = [];
@@ -801,7 +921,7 @@ function trimSelfCrossing(v: number[], minSep: number, step: number): number[] {
     const ay = v[i * 2 + 1];
     const bx = v[(i + 1) * 2];
     const by = v[(i + 1) * 2 + 1];
-    const len = Math.hypot(bx - ax, by - ay);
+    const len = Math.hypot(bx - ax, by - ay) || 1;
     const m = Math.max(1, Math.ceil(len / step));
     for (let s = 0; s < m; s++) {
       const f = s / m;
@@ -813,14 +933,24 @@ function trimSelfCrossing(v: number[], minSep: number, step: number): number[] {
     acc += len;
   }
 
-  const min2 = minSep * minSep;
-  const window = minSep * 1.6;
+  // Two ribbon sections overlap when their centre lines come closer than the
+  // ribbon is wide — that, and only that, is what this has to prevent. It is
+  // independent of the angle they meet at.
+  //
+  // Testing against `minSep` instead cut every coil. `minSep` carries a `pitch · 8`
+  // floor, which is there so a bundle has room to turn back on itself — a job
+  // `minRun` already does — and against a ribbon a fraction of that width it is
+  // far more clearance than overlap requires. Measured on a 10px ribbon with
+  // `minSep` at 36: every one of 3198 cuts fired at 31–36px, all of them exactly
+  // perpendicular, which is a spiral's own corners reading as collisions.
+  const ribbon2 = ribbon * ribbon;
+  const window = ribbon * 2.2;
   for (let i = 0; i < sx.length; i++) {
     for (let j = 0; j < i; j++) {
       if (arc[i] - arc[j] < window) break; // arc is increasing — the rest are nearer still
       const dx = sx[i] - sx[j];
       const dy = sy[i] - sy[j];
-      if (dx * dx + dy * dy < min2) return v.slice(0, (seg[i] + 1) * 2);
+      if (dx * dx + dy * dy < ribbon2) return v.slice(0, (seg[i] + 1) * 2);
     }
   }
   return v;
@@ -1173,6 +1303,9 @@ function trailDashes(
   // curtain. The cornered cable higher up is meant to read as continuous, and
   // dashes breaking out of those turns just look like damage.
   if (y < below) return [];
+  // And to the curtain's own side of the board. Depth alone let dashes hang off the
+  // low right, where the reference has none — its only broken ends are bottom-left.
+  if (x > w * CURTAIN_ZONE) return [];
   const dx = x - pts[n - 4];
   const dy = y - pts[n - 3];
   const len = Math.hypot(dx, dy) || 1;
@@ -1264,7 +1397,11 @@ export function computeJagged(
   const pitch = Math.max(3, p.spacing);
   // Clearance grid. A lane is refused wherever it would come within `clear` of
   // ink already on the board, which is what keeps the field evenly combed.
-  const grid = Math.max(2, pitch * 0.5);
+  // Quarter-pitch cells, not half. Marking is by cell centre, so at half-pitch a
+  // lane one full pitch clear of existing ink could still land in a cell whose
+  // centre sat inside the clearance radius — legal one-pitch spacing read as
+  // blocked, and two thirds of nested lanes were being refused outright.
+  const grid = Math.max(1.5, pitch * 0.25);
   const cols = Math.ceil(w / grid) + 1;
   const rows = Math.ceil(h / grid) + 1;
   const occ = new Uint8Array(cols * rows);
@@ -1620,10 +1757,21 @@ export function computeJagged(
       turnSigns = host.signs;
       base = host.base;
     } else {
+      // Coils go down first, while the board is still open. Left to the general
+      // pool they were being routed into a field already full of ink, so the
+      // clearance grid cut their laps back to fragments — the same reason late
+      // bundles land as stubs.
+      const pAttempt =
+        p.coil > 0 && placed >= want * COIL_FIRST
+          ? { ...p, coil: p.coil * 0.15 }
+          : p;
       const walk = trimSelfCrossing(
-        buildSpine(w, h, p, rand, minRun),
+        buildSpine(w, h, pAttempt, rand, minRun, minSep),
         minSep,
         Math.max(2, pitch),
+        // Parallel returns only have to clear the ribbon itself, which is what
+        // lets a coil's laps sit next to each other.
+        halfSpan * 2 + pitch,
       );
       if (walk.length < 6) continue;
       // Chamfer before offsetting: the lanes are then parallel copies of an
@@ -1640,6 +1788,9 @@ export function computeJagged(
     // than down. Counted before the fringe, which is a deliberate cut rather than
     // a bundle failing to fit.
     let sidewaysStops = 0;
+    // Counted separately because they are judged on a different rule: any at all
+    // and the bundle is refused. See CURTAIN_ZONE.
+    let rightFragments = 0;
 
     for (let k = 0; k < count; k++) {
       const t = lateral + (k - (count - 1) / 2) * pitch;
@@ -1671,7 +1822,15 @@ export function computeJagged(
       // Fringe: a lane that stops short of its neighbours. Drawn per lane so
       // the bundle's ends comb out instead of shearing off flat. `drop` steers
       // the cut into the lane's lowest descending run, so the stub hangs down.
-      if (kept.length >= 4 && p.fringe > 0 && rand() < p.fringe) {
+      // Fraying is a curtain behaviour only. Allowed anywhere it scattered ragged
+      // ends across the right side, where the reference has none — every trace
+      // there either exits the frame or completes its turn.
+      if (
+        kept.length >= 4 &&
+        p.fringe > 0 &&
+        kept[kept.length - 2] < w * CURTAIN_ZONE &&
+        rand() < p.fringe
+      ) {
         const full = polylineLength(kept);
         // A lane may only fray where it is already heading down, and only in the
         // back half of its run so the drip hangs off the end rather than lopping
@@ -1713,6 +1872,27 @@ export function computeJagged(
       const len = polylineLength(kept);
       if (len < minLane) continue;
 
+      // Judged on the geometry that will actually be inked, whatever shortened it.
+      // Counting only the lanes the clearance grid truncated missed most of them:
+      // a lane also ends early when it crosses a sibling, when an inner lane of a
+      // turn runs out of room, and above all when `trimSelfCrossing` cut the spine
+      // out from under it — in that last case nothing truncates the lane at all, it
+      // simply follows a centre line that stops in open board. Those were 23 of 32
+      // right-side ends before this test looked at the finished lane.
+      {
+        const n = kept.length;
+        const ex = kept[n - 2];
+        const ey = kept[n - 1];
+        const interior = ex > 3 && ex < w - 3 && ey > 3 && ey < h - 3;
+        if (interior && ex > w * CURTAIN_ZONE) {
+          const dx = ex - kept[n - 4];
+          const dy = ey - kept[n - 3];
+          // Heading down is the curtain draining and is allowed to stop; anything
+          // else is a trace that neither left the frame nor finished its turn.
+          if (dy / (Math.hypot(dx, dy) || 1) < 0.85) rightFragments++;
+        }
+      }
+
       total += len;
       const wdt = p.lineWidth * (1 + (rand() - 0.5) * 2 * p.widthVar);
       // `order` carries the bundle index here; normalised to 0..1 below so the
@@ -1745,11 +1925,17 @@ export function computeJagged(
     // Refuse only when a majority of lanes stop sideways — a single clipped outer
     // lane on an otherwise intact cable reads fine and rejecting the whole bundle
     // was leaving most of the board empty.
+    // On the right the tolerance is zero. A single trace that stops there without
+    // either leaving the frame or finishing its turn is the fragmenting that makes
+    // this read as damaged rather than dense, so the bundle is refused and the
+    // attempt budget spent finding somewhere it can complete. The curtain keeps the
+    // looser test, because that is where stopping short is the intended look.
     const need = Math.min(3, count);
     if (
       batch.length < need ||
       total < minTotal ||
       total / batch.length < minMean ||
+      rightFragments > 0 ||
       sidewaysStops > Math.max(1, Math.floor(batch.length * 0.4))
     ) {
       continue;

@@ -29,19 +29,52 @@ export const BG = "#F5F5F2"; // Cream
 const CONTOUR_FADE: FadeOptions = { start: 0.92, floor: 0.99, tipFrac: 0.03 };
 
 /**
+ * Vetted terrains. Contour fill is a lottery on the raw seed: two thirds of
+ * seeds put their relief unevenly enough that a quadrant of the sheet reads
+ * blank, and no exposed slider can rescue one — Density and Spread are off the
+ * panel. So the seed slider indexes this list instead of the raw seed space.
+ *
+ * Built by sweeping seeds 1–6000 at the locked `fieldScale` / `levels` /
+ * `minRing` and scoring each on how evenly its linework covers a 12×10 cell
+ * grid: share of cells under half the median cell's path length (≤0.083),
+ * emptiest cell against the median (≥0.248), spread of cell density (cv
+ * ≤0.533), total path length (≥146.3 per 1000px², above the median seed) and a
+ * busiest-cell ceiling (≤3.66× median) so the stamp pass can't fuse tight bands
+ * into solid ink. Scored at the 1:1 preview dims, then re-checked against the
+ * other three aspect presets on a looser floor — the field is sampled over
+ * whatever window the canvas is, so a seed that fills a square can still leave
+ * a gap in 16:9. 53 of 6000 passed. The scores are specific to those params —
+ * if any of them move, re-run `_contourseeds_node.ts` and paste the new list.
+ */
+export const CONTOUR_SEEDS = [
+  42, 89, 257, 451, 658, 792, 838, 841, 846, 886, 918, 995, 1575, 1625, 1739,
+  1787, 2024, 2059, 2204, 2503, 2708, 2739, 2749, 2753, 2774, 2785, 2813, 2820,
+  2821, 3479, 3536, 3568, 3605, 3740, 3764, 3798, 3860, 3915, 4136, 4466, 4470,
+  4490, 4598, 4683, 5249, 5251, 5299, 5313, 5320, 5328, 5692, 5814, 5998,
+];
+
+/** Resolve a 1-based seed slider position to its vetted field seed. */
+export function fieldSeed(seed: number): number {
+  const i = Math.round(seed) - 1;
+  const n = CONTOUR_SEEDS.length;
+  return CONTOUR_SEEDS[((i % n) + n) % n];
+}
+
+/**
  * Topographic contour lines. A domain-warped simplex field is sampled onto a
  * grid, then d3-contour traces iso-lines at evenly spaced levels — the nested,
  * meandering linework of an antique survey map. With an image, the field is
  * blended toward the picture's tone so the contours band its forms.
  */
 export interface ContourParams {
-  seed: number;
+  seed: number; // 1-based index into CONTOUR_SEEDS, not the raw field seed
   fieldScale: number; // feature size — cells across the long edge
   octaves: number; // fbm detail layers
   warp: number; // domain-warp amount — how much the lines meander
   levels: number; // number of contour lines
   fill: number; // 0..1 — spread contours by area rather than by raw elevation value, so flat plateaus fill with lines instead of sitting blank (independent of line count)
   evenness: number; // 0..1 — flatten the broad elevation trend so every part of the canvas carries relief, and the linework spreads instead of bunching on the steep side
+  minRing: number; // smallest ring worth drawing, as a share of canvas area — culls the innermost pinprick loops at each peak
   lineWidth: number; // stroke width
   // ink treatment — the same stamp/cutout render pass the Root Brush runs
   stamp: number; // 0..1 ink-stamp fatten/smooth pass (0 = off)
@@ -52,17 +85,26 @@ export interface ContourParams {
 }
 
 export const DEFAULT_CONTOUR: ContourParams = {
-  seed: 46933,
+  // Index into CONTOUR_SEEDS, not a raw seed.
+  seed: 17,
   fieldScale: 3,
   octaves: 0,
   warp: 0,
-  levels: 12,
+  // At 12 the plateaus between landforms sat blank and fill swung seed to seed;
+  // 16 rings the plateaus too. Past ~18 the tight bands fuse under the stamp
+  // pass into solid ink.
+  levels: 16,
   // Contours are placed mostly by raw elevation. Area-weighted placement (see
   // `fill`) crowds the thresholds into whatever value band covers the most
   // canvas, which starves the peaks and basins of lines — the opposite of the
   // even coverage it was reached for. `evenness` does that job properly.
   fill: 0.2,
   evenness: 1,
+  // At the old 0.0024 speckle floor every peak ended in a nest of pinprick
+  // loops — around 55 rings under a fiftieth of the canvas per sheet. This
+  // clears those, so each peak closes on one broad ring and neighbouring bands
+  // read as joined forms. Past ~0.016 the peaks hollow out into empty lenses.
+  minRing: 0.008,
   lineWidth: 0.3,
   // Ink treatment, both dialled in against the reference and locked — no
   // sliders, so the pass always fattens the contours and breaks them by this
@@ -74,13 +116,14 @@ export const DEFAULT_CONTOUR: ContourParams = {
 };
 
 export const CONTOUR_RANGES: Record<keyof ContourParams, [number, number, number]> = {
-  seed: [1, 99999, 1],
+  seed: [1, CONTOUR_SEEDS.length, 1],
   fieldScale: [2, 18, 0.5],
   octaves: [0, 6, 1],
   warp: [0, 2.5, 0.05],
   levels: [3, 20, 1],
   fill: [0, 1, 0.02],
   evenness: [0, 1, 0.02],
+  minRing: [0, 0.03, 0.0005],
   lineWidth: [0.3, 1, 0.01],
   stamp: [0, 0.45, 0.01],
   cutout: [0, 1, 0.01],
@@ -96,6 +139,7 @@ export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
   levels: "Density",
   fill: "Fill",
   evenness: "Spread",
+  minRing: "Min Ring",
   lineWidth: "Line Weight",
   stamp: "Stamp",
   cutout: "Line Breaks",
@@ -104,7 +148,7 @@ export const CONTOUR_LABELS: Record<keyof ContourParams, string> = {
 };
 
 export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
-  seed: "Random starting value. Same seed always produces the same terrain.",
+  seed: "Steps through the vetted terrains. Each one is checked to carry linework across the whole sheet, so no position lands on a half-empty map.",
   fieldScale: "Size of the landforms. Lower values make broad basins; higher values pack tighter ridges.",
   octaves: "Layers of detail folded into the field. More layers add fine crinkle to the coastlines.",
   warp: "How much the field is distorted — turns smooth blobs into meandering, river-like contours.",
@@ -112,6 +156,8 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
   fill: "Spreads contours by how much canvas area they cover rather than by raw elevation. Zero spaces lines evenly by elevation; one crowds them into whichever band covers the most canvas, which fills the plateaus but empties the peaks and basins.",
   evenness:
     "Levels out how much relief each part of the canvas carries, by flattening the broad rise and fall underneath the landforms. Zero leaves the raw field, where a seed can put all its slope in one corner and leave the rest blank; one gives every region its own contour rings. Shapes and their scale stay the same — only how evenly the lines are spread changes.",
+  minRing:
+    "Drops any ring smaller than this share of the canvas. Raising it clears the pinprick loops at the centre of each peak, so the surviving rings read as fewer, broader forms; too high and the peaks hollow out.",
   lineWidth: "Thickness of the contour strokes.",
   stamp:
     "Ink-stamp fatten pass (à la Photoshop's Stamp filter). Spreads and smooths the linework into solid calligraphic ink, fusing fine clusters. Zero switches it off.",
@@ -122,7 +168,7 @@ export const CONTOUR_HINTS: Record<keyof ContourParams, string> = {
 };
 
 // The only sliders exposed in the UI. Every other param stays at its default,
-// including Density (`levels`), settled at 12, Spread (`evenness`), which is
+// including Density (`levels`), settled at 16, Spread (`evenness`), which is
 // what keeps every seed's linework covering the whole canvas, and the ink
 // treatment pair Stamp and Line Breaks, settled at 0.39 and 0.72.
 export const SLIDER_KEYS_SIMPLE: (keyof ContourParams)[] = [
@@ -162,12 +208,19 @@ function buildField(
   p: ContourParams,
   buf: LumBuffer | null | undefined,
 ): Float64Array {
-  const rng = mulberry32(p.seed);
+  // `p.seed` is a slider position; the field runs off the vetted seed behind it.
+  const s = fieldSeed(p.seed);
+  const rng = mulberry32(s);
   const noise = createNoise2D(rng);
-  const warpNoiseX = createNoise2D(mulberry32(p.seed ^ 0x1234));
-  const warpNoiseY = createNoise2D(mulberry32(p.seed ^ 0x9abc));
+  const warpNoiseX = createNoise2D(mulberry32(s ^ 0x1234));
+  const warpNoiseY = createNoise2D(mulberry32(s ^ 0x9abc));
   const octaves = Math.max(1, Math.round(p.octaves));
-  const cell = Math.max(w, h) / p.fieldScale;
+  // Feature size off the canvas's area, not its long edge. Preview dims hold a
+  // constant pixel area across every aspect preset, so this gives 16:9 and 9:16
+  // the same landform size — and the same fill — as the square. Keyed to the long
+  // edge, a wide frame stretched each landform to a third of 837px and fitted
+  // barely more than one row of them into 471px of height.
+  const cell = Math.sqrt(w * h) / p.fieldScale;
 
   const fbm = (nx: number, ny: number, fn: (x: number, y: number) => number) => {
     let amp = 0.5;
@@ -337,9 +390,10 @@ export function computeContours(
   const lines: ContourLine[] = [];
   // Smallest ring worth drawing, as a share of the canvas so it holds at any size
   // or aspect. A single tiny loop around a pinprick in the field reads as speckle
-  // rather than as terrain — at 1080² this floor is about a 30px radius, well under
-  // the median ring (~72px), so it takes the specks and leaves the landforms.
-  const minRingArea = w * h * 0.0024;
+  // rather than as terrain — at the 0.0024 floor and 1080² that is about a 30px
+  // radius, well under the median ring (~72px), so it takes the specks and leaves
+  // the landforms. Raise it to thin out the innermost loops at each peak.
+  const minRingArea = w * h * Math.max(0, p.minRing);
 
   geo.forEach((multi, idx) => {
     const order = thresholds.length > 1 ? idx / (thresholds.length - 1) : 1;
@@ -494,12 +548,13 @@ export function buildContourSVG(
 }
 
 export function randomContourParams(prev: ContourParams): ContourParams {
-  const rand = mulberry32((prev.seed * 2654435761) >>> 0);
-  // Only the seed. Density, Field Scale, Detail and Meander are all off the panel
-  // and settled at their defaults, and a shuffle must not land on a value there is
-  // no longer any control to bring back — Detail and Meander in particular would
-  // crinkle and warp the coastlines with no way to flatten them again.
-  return { ...prev, seed: Math.floor(rand() * 99999) + 1 };
+  const rand = mulberry32((fieldSeed(prev.seed) * 2654435761) >>> 0);
+  // Only the seed, and only within the vetted list. Density, Field Scale, Detail
+  // and Meander are all off the panel and settled at their defaults, and a shuffle
+  // must not land on a value there is no longer any control to bring back — Detail
+  // and Meander in particular would crinkle and warp the coastlines with no way to
+  // flatten them again.
+  return { ...prev, seed: Math.floor(rand() * CONTOUR_SEEDS.length) + 1 };
 }
 
 export { sampleLuminance };
