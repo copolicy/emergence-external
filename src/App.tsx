@@ -4,6 +4,7 @@ import logo from './assets/emergence-logo.png';
 import RootBrush from './tools/RootBrush';
 import FlowField from './tools/FlowField';
 import Jagged from './tools/Jagged';
+import InfraTesting from './tools/InfraTesting';
 import Hatch from './tools/Hatch';
 import Contour from './tools/Contour';
 import RoadColors from './tools/RoadColors';
@@ -25,6 +26,8 @@ const TOOLS: ToolDef[] = [
   { id: 'root-brush', label: 'Root Brush', Component: RootBrush },
   { id: 'flow-field', label: 'Fingerprint', Component: FlowField },
   { id: 'jagged', label: 'Circuit Traces', Component: Jagged },
+  // The reference artwork as traced vector geometry.
+  { id: 'infra-trace', label: 'Infrastructure', Component: InfraTesting },
   { id: 'hatch', label: 'Hatch', Component: Hatch },
   { id: 'contour', label: 'Contour', Component: Contour },
   { id: 'road-colors', label: 'Map', Component: RoadColors },
@@ -55,7 +58,6 @@ interface VerticalDef {
 
 const VERTICALS: VerticalDef[] = [
   { id: 'healthcare', label: 'Healthcare', toolId: 'flow-field' },
-  { id: 'infrastructure', label: 'Infrastructure', toolId: 'jagged' },
   { id: 'supply-chain', label: 'Supply Chain', toolId: 'contour' },
   { id: 'automotive', label: 'Automotive', toolId: 'road-colors' },
   { id: 'fintech', label: 'FinTech', toolId: 'mesh' },
@@ -63,6 +65,7 @@ const VERTICALS: VerticalDef[] = [
   { id: 'financial-services', label: 'Financial Services', toolId: 'hatch' },
   { id: 'telecom', label: 'Telecom', toolId: 'signal' },
   { id: 'education', label: 'Education', toolId: 'network' },
+  { id: 'infrastructure', label: 'Infrastructure', toolId: 'infra-trace' },
 ];
 
 export default function App() {

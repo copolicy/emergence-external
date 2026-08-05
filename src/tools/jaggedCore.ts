@@ -129,7 +129,12 @@ export const DEFAULT_JAGGED: JaggedParams = {
   ...DEFAULT_FLOW,
   seed: 37,
   spacing: 9.5,
-  lineWidth: 1.35,
+  // Measured off the reference artwork: its traces run 10px wide on a 31.4px pitch,
+  // a pitch-to-weight ratio of 3.14. At 1.35 against this pitch the ratio was 7 —
+  // the linework read as hairlines with wide gaps rather than as the dense ribbon
+  // cable the reference draws. Scaled to a 580-tall canvas the reference is a 2.86px
+  // stroke on an 8.98px pitch, which is where these two land.
+  lineWidth: 3,
   widthVar: 0,
   stamp: 0.03,
   jitter: 0.2,
@@ -241,17 +246,49 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
     "How far a descending lane on the left carries on past its blunt end as dashes that shorten and space out — the trace dissolving into ticks. Only applies where the board has settled into its curtain; the cornered routing on the right is left continuous. A lane that stopped because it ran into other ink gets no trail either, since there is nowhere for it to go.",
 };
 
-// The only sliders exposed in the UI. Every other param stays at its default —
-// `bundles`, `ribbonVar`, `switchback`, `nest`, `settle` and `drop` set the
-// board's character rather than tune a composition, and so do the routing
-// dimensions `margin`, `spacing`, `run`, `turns`, `corner`, `knee`, `facets`,
-// `fringe` and `trail`, and now the ink treatment `stamp` and `cutout` too: the
-// board is settled, and what is left on the rail is which one you get and how
-// heavily it is drawn. They are dialled in above and left alone. Move one back
-// into this list if it turns out to need reaching for.
+// Sliders exposed in the UI, opened back up for dialling against the reference
+// artwork. Ordered composition → ribbon → routing → corners → curtain → ink, which
+// is roughly the order the picture is built in.
+//
+// Every one of these was checked to actually change the output. Deliberately left
+// off, because they do nothing at these defaults:
+//
+//   `coil`  — the inward-spiral mechanism never survives `trimSelfCrossing`, so the
+//             slider has no effect at any value.
+//   `trail` — its dashes require a lane ending near-vertical below the settle line,
+//             which no lane currently does; the board renders zero dashes at 0.9.
+//
+// Also off: the flow-field params this shares its type with (`swirl`, `turbulence`,
+// `drift`, `stepLen`, `maxLen`, `dash`, the `emerge*` family, the image controls).
+// Jagged routes its own spines and never reads them.
 export const SLIDER_KEYS_SIMPLE_JAGGED: (keyof JaggedParams)[] = [
   "seed",
+  "bundles",
+  "margin",
+  // Ribbon. Measured off the reference: 8 traces on a 31.4px pitch with a 10px
+  // stroke, which is a pitch-to-weight ratio of 3.14.
+  "spacing",
+  "traces",
+  "ribbonVar",
+  // Routing.
+  "run",
+  "turns",
+  "jitter",
+  "curl",
+  "switchback",
+  "nest",
+  // Corners — the 45° chamfer is the most visible thing in the reference.
+  "corner",
+  "knee",
+  "facets",
+  // Curtain.
+  "settle",
+  "fringe",
+  "drop",
+  // Ink.
   "lineWidth",
+  "stamp",
+  "cutout",
 ];
 
 // ---- geometry helpers ------------------------------------------------------
