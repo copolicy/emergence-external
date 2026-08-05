@@ -234,6 +234,7 @@ export const JAGGED_HINTS: Record<keyof JaggedParams, string> = {
   curl: "How strongly a bundle keeps turning the same way. High values coil it into nested corners; zero wanders.",
   switchback:
     "How often a turn doubles into a 180° U — out, across, and back — instead of a single corner. This is what builds the nested hooks.",
+  coil: "How often a cable winds inward on shrinking legs into a spiral instead of carrying on across the board. Zero leaves every bundle as open routing.",
   margin:
     "How much of the left edge is kept clear, widening toward the bottom so traces still reach the edge up high while the lower corner opens up for type. Lanes stop against it blunt and staggered, the same way they stop against other ink.",
   nest: "How often a new bundle routes alongside one already placed, sharing its corners at the same pitch instead of finding its own path.",
@@ -542,7 +543,6 @@ function buildReferenceSpines(
   // Wide centre U: left wall pushed inboard, right wall near the edge.
   const xPocket = q(w * (0.34 + j(0.015)));
   const xBack = q(w * (0.88 + j(0.012)));
-  const xTop = q(w * (0.42 + j(0.02)));
   const yTop = q(Math.max(pitch * 2, h * (0.03 + j(0.008))));
 
   // TOP entry — bleeds off the top edge into the left curtain.
@@ -941,7 +941,7 @@ function buildSpine(
  */
 function trimSelfCrossing(
   v: number[],
-  minSep: number,
+  _minSep: number,
   step: number,
   ribbon: number,
 ): number[] {
