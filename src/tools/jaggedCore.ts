@@ -112,7 +112,7 @@ export interface JaggedParams extends FlowParams {
   curl: number; // 0..1 how strongly a bundle keeps turning the same way
   switchback: number; // 0..1 how often a turn becomes a 180° U instead of one corner
   coil: number; // 0..1 how often a cable winds inward on shrinking legs into a
-                // nested spiral, rather than carrying on across the board
+  // nested spiral, rather than carrying on across the board
   margin: number; // 0..1 keep-out down the left edge, widening toward the bottom
   nest: number; // 0..1 how often a bundle routes alongside one already placed
   settle: number; // 0..1 how strongly bundles stop cornering and run straight down
@@ -749,16 +749,16 @@ function buildSpine(
       coilLeft > 0
         ? Math.max(minRun, quantRun(coilLen))
         : pairLeft > 0
-        ? quantRun(cross)
-        : i === 0
-          ? entryRun
-          : vertical
-            ? // Hook right-wall and mid-band pocket steps need real depth so
-              // the ∪ reads; ordinary jogs stay short.
-              hookPhase > 0 || (stepThenLeft > 0 && midBand)
-              ? loopDepth
-              : Math.max(vertFloor, quantRun(p.run * vary * VERTICAL_LEG))
-            : Math.max(minRun, quantRun(p.run * vary));
+          ? quantRun(cross)
+          : i === 0
+            ? entryRun
+            : vertical
+              ? // Hook right-wall and mid-band pocket steps need real depth so
+                // the ∪ reads; ordinary jogs stay short.
+                hookPhase > 0 || (stepThenLeft > 0 && midBand)
+                ? loopDepth
+                : Math.max(vertFloor, quantRun(p.run * vary * VERTICAL_LEG))
+              : Math.max(minRun, quantRun(p.run * vary));
     // Opening vertical step must stay on the board — walking off the top or
     // bottom here aborted the spine before it could turn back onto LEFT, which
     // is why every band exited the near edge instead of crossing the frame.
@@ -893,8 +893,7 @@ function buildSpine(
       d = (d + turn + 4) % 4;
       pairLeft--;
       // Mid-band switchback finishes heading RIGHT — climb, then left out.
-      if (pairLeft === 0 && d === 0 && midBand && rand() < 0.55)
-        hookPhase = 2;
+      if (pairLeft === 0 && d === 0 && midBand && rand() < 0.55) hookPhase = 2;
     } else if (
       rand() < (midBand ? Math.max(p.switchback, 0.5) : p.switchback)
     ) {

@@ -40,18 +40,14 @@ export interface InfraTraceParams extends JaggedParams {
 
 export const DEFAULT_INFRA_TRACE: InfraTraceParams = {
   ...(DEFAULT_FLOW as unknown as JaggedParams),
-  seed: 1,
-  // Measured off the reference: a 10px stroke on a 31.4px pitch. Held as a fraction
-  // of the artwork's height by `TRACE_WEIGHT`, so it stays true at any canvas size —
-  // `lineWidth` scales that rather than replacing it.
-  lineWidth: 1,
-  // 1 is exactly cover now, so the board fills any canvas without help and there is
-  // no stock offset to undo.
-  scale: 1,
+  seed: 3939,
+  // Tuned composition for the Infrastructure vertical (1:1 canvas).
+  lineWidth: 0.8,
+  scale: 1.11,
   inset: 0.04,
   mirror: 1,
-  nudgeX: 0,
-  nudgeY: 0,
+  nudgeX: 0.055,
+  nudgeY: -0.105,
   // On, because `variation` gates everything the seed does and a Seed slider that
   // needs a second slider raised before it responds reads as broken — every other
   // tool here varies on seed alone. Drop this to 0 to get the reference back exactly
@@ -88,8 +84,7 @@ export const INFRA_TRACE_LABELS: Record<string, string> = {
 };
 
 export const INFRA_TRACE_HINTS: Record<string, string> = {
-  seed:
-    "Which variation of the traced artwork is drawn. Does nothing at Variation 0, where the board is the reference exactly as traced.",
+  seed: "Which variation of the traced artwork is drawn. Does nothing at Variation 0, where the board is the reference exactly as traced.",
   variation:
     "How far the seed may depart from the reference: it flips the orientation, drops some of the shorter traces, and moves where ends fray. The geometry is always the reference's own, so this cannot wander off-style — and equally it cannot compose a different board. That would mean cutting the trace into motifs and recombining them.",
   lineWidth:
@@ -99,10 +94,12 @@ export const INFRA_TRACE_HINTS: Record<string, string> = {
   inset: "Clear margin held between the artwork and the canvas edge.",
   mirror:
     "Flips the artwork horizontally. The reference SVG mirrors its own bitmap, so this starts on — off shows the untransformed trace, ribbons entering from the left.",
-  nudgeX: "Shifts the artwork left or right, as a fraction of the canvas width.",
+  nudgeX:
+    "Shifts the artwork left or right, as a fraction of the canvas width.",
   nudgeY:
     "Shifts the artwork up or down; negative is up. Only needed to choose *which* part shows when Scale crops — the fit itself is automatic.",
-  stamp: "Ink-stamp fatten pass. Spreads and smooths the linework into solid ink.",
+  stamp:
+    "Ink-stamp fatten pass. Spreads and smooths the linework into solid ink.",
   cutout:
     "Cutout pass — pinches thin spots into organic breaks and dashes without thickening the line.",
 };
@@ -166,10 +163,8 @@ export function computeInfraTrace(
   // Coalesced, not assumed present: a param added to the defaults does not appear in
   // a component's existing state until it remounts, and one `undefined` here turns
   // every coordinate into NaN and blanks the canvas rather than failing visibly.
-  const ox =
-    (w - artW) / 2 + slackX * (rand() - 0.5) * v + (p.nudgeX ?? 0) * w;
-  const oy =
-    (h - artH) / 2 + slackY * (rand() - 0.5) * v + (p.nudgeY ?? 0) * h;
+  const ox = (w - artW) / 2 + slackX * (rand() - 0.5) * v + (p.nudgeX ?? 0) * w;
+  const oy = (h - artH) / 2 + slackY * (rand() - 0.5) * v + (p.nudgeY ?? 0) * h;
   // Orientation first, and only ever a flip — the artwork is octilinear, so mirroring
   // keeps every heading on the same eight and reads as a different board rather than a
   // tilted copy. A rotation would put the curtain on a side it never hangs from.
@@ -178,7 +173,7 @@ export function computeInfraTrace(
   // seed that only drops a few stubs looks like it did nothing. At the default this
   // spreads seeds fairly evenly over the four flips.
   const flipY = v > 0 && rand() < v * 0.9;
-  const flip = (p.mirror >= 0.5) !== (v > 0 && rand() < v * 0.9);
+  const flip = p.mirror >= 0.5 !== (v > 0 && rand() < v * 0.9);
 
   const out: FlowLine[] = [];
   for (let i = 0; i < n; i++) {
@@ -192,7 +187,8 @@ export function computeInfraTrace(
     // Fray: pull an end back along its own path. Only ever shortens, and only from one
     // end, so a trace still starts where the reference put it.
     const trim = v > 0 && rand() < v * 0.35 ? 1 - rand() * v * 0.25 : 1;
-    const last = trim < 1 ? Math.max(2, Math.round(src.length * trim)) : src.length;
+    const last =
+      trim < 1 ? Math.max(2, Math.round(src.length * trim)) : src.length;
 
     const pts: number[] = [];
     for (let k = 0; k < last; k++) {
