@@ -106,11 +106,6 @@ export const INFRA_TRACE_HINTS: Record<string, string> = {
 
 export const SLIDER_KEYS_INFRA_TRACE: string[] = [
   "seed",
-  "variation",
-  "scale",
-  "nudgeX",
-  "nudgeY",
-  "inset",
   "lineWidth",
   "stamp",
   "cutout",
