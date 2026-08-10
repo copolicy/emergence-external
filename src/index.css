@@ -212,7 +212,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding-top: 4px;
+  padding-top: 14px;
   border-top: 1px solid var(--border);
 }
 
@@ -292,16 +292,21 @@ button {
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export {
-  /* Pin export + play/reset to the bottom; empty space sits above. */
+  /* Pin export to the bottom; empty space sits above. */
   margin-top: auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
   gap: 6px;
+}
+
+.mode-rail__tool-controls .specimen-tree__actions--export .export-menu,
+.mode-rail__tool-controls .specimen-tree__actions--export > .btn {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export .export-menu {
   display: flex;
-  min-width: 0;
 }
 
 .mode-rail__tool-controls .specimen-tree__actions--export .export-menu > .btn,
@@ -328,8 +333,13 @@ button {
 }
 
 .seg--vertical {
-  flex-direction: column;
-  border-radius: 14px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
 }
 
 .seg__opt {
@@ -347,17 +357,34 @@ button {
   cursor: pointer;
   transition:
     color 0.15s ease,
-    background 0.15s ease;
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .seg--vertical .seg__opt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid var(--border);
   border-radius: 10px;
+  padding: 7px 8px;
+  background: var(--bg-elevated);
   text-transform: none;
-  text-align: left;
+  text-align: center;
+  line-height: 1.2;
+  /* Long labels (Financial Services) wrap cleanly in the half-width cell. */
+  white-space: normal;
+  hyphens: auto;
 }
 
 .seg__opt:hover {
   color: var(--ink);
+}
+
+.seg--vertical .seg__opt:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--border) 70%, var(--ink-muted));
 }
 
 .seg__opt--active {
@@ -388,8 +415,16 @@ button {
 }
 
 .seg--alt.seg--vertical .seg__opt {
-  font-size: 0.78rem;
-  padding: 8px 12px;
+  font-size: 0.72rem;
+  padding: 7px 8px;
+}
+
+.seg--alt.seg--vertical .seg__opt--active {
+  border-color: color-mix(in srgb, var(--hero) 65%, var(--ink));
+}
+
+.seg--alt.seg--vertical .seg__opt--active:hover {
+  border-color: color-mix(in srgb, var(--hero) 65%, var(--ink));
 }
 
 /* On/off switch (Topographic). */
@@ -1200,6 +1235,56 @@ button {
   gap: 6px;
 }
 
+.tool-param-row__track {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tool-param-row__track input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.param-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.param-step svg {
+  width: 14px;
+  height: 14px;
+}
+
+.param-step:hover:not(:disabled) {
+  color: var(--copo-blue);
+  background: var(--accent-soft);
+}
+
+.param-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.param-step:focus-visible {
+  outline: 2px solid var(--copo-blue);
+  outline-offset: 1px;
+}
+
 .param-play {
   display: inline-flex;
   align-items: center;
@@ -1253,10 +1338,10 @@ button {
 
 .tool-param-row input[type="range"]::-webkit-slider-thumb {
   appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -5px;
-  border: 2px solid var(--copo-white);
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid rgba(0, 0, 0, 0.28);
   border-radius: 50%;
   background: var(--copo-blue);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
@@ -1275,9 +1360,9 @@ button {
 }
 
 .tool-param-row input[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--copo-white);
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(0, 0, 0, 0.28);
   border-radius: 50%;
   background: var(--copo-blue);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);

@@ -111,6 +111,127 @@ export const SLIDER_KEYS_INFRA_TRACE: string[] = [
   "cutout",
 ];
 
+// ---- centreline weld -------------------------------------------------------
+// The recovered TRACE_PATHS still leave some near-miss endpoints as separate
+// strokes (the offline weld only joined exact coincidences). On a tall crop like
+// 9:16 those gaps read as mid-path breaks even with Stamp / Line Breaks at 0.
+// Join radius stays well under half the reference pitch (~0.0155) so parallel
+// ribbons are not welded together. Dot ≥ 0 keeps collinear joins and 90° corners
+// (the original recovery required this — positive-only rejected every square turn).
+
+const JOIN_R = 0.0055;
+const JOIN_MIN_DOT = 0;
+const MIN_PATH_LEN = 0.003;
+
+function dist2(a: number[], b: number[]): number {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return dx * dx + dy * dy;
+}
+
+function pathLength(path: number[][]): number {
+  let len = 0;
+  for (let i = 1; i < path.length; i++) {
+    const dx = path[i][0] - path[i - 1][0];
+    const dy = path[i][1] - path[i - 1][1];
+    len += Math.hypot(dx, dy);
+  }
+  return len;
+}
+
+function endHeading(path: number[][], end: "start" | "end"): [number, number] {
+  if (path.length < 2) return [0, 0];
+  const a = end === "start" ? path[0] : path[path.length - 2];
+  const b = end === "start" ? path[1] : path[path.length - 1];
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const L = Math.hypot(dx, dy) || 1;
+  return [dx / L, dy / L];
+}
+
+/** Drop short 180° hairpin stubs that fold a centreline back on itself. */
+function stripHairpins(path: number[][]): number[][] {
+  if (path.length < 3) return path;
+  const out: number[][] = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const prev = out[out.length - 1];
+    const cur = path[i];
+    const next = path[i + 1];
+    const dx1 = cur[0] - prev[0];
+    const dy1 = cur[1] - prev[1];
+    const dx2 = next[0] - cur[0];
+    const dy2 = next[1] - cur[1];
+    const L1 = Math.hypot(dx1, dy1) || 1;
+    const L2 = Math.hypot(dx2, dy2) || 1;
+    const dot = (dx1 / L1) * (dx2 / L2) + (dy1 / L1) * (dy2 / L2);
+    if (dot < -0.85 && L1 < 0.02) continue;
+    out.push(cur);
+  }
+  out.push(path[path.length - 1]);
+  return out;
+}
+
+function tryMerge(A: number[][], B: number[][]): number[][] | null {
+  const configs: [number[][], number[][]][] = [
+    [A, B],
+    [A, B.slice().reverse()],
+    [A.slice().reverse(), B],
+    [A.slice().reverse(), B.slice().reverse()],
+  ];
+  const r2 = JOIN_R * JOIN_R;
+  let best: number[][] | null = null;
+  let bestD = Infinity;
+  for (const [a, b] of configs) {
+    const d2 = dist2(a[a.length - 1], b[0]);
+    if (d2 > r2 || d2 >= bestD) continue;
+    const [ax, ay] = endHeading(a, "end");
+    const [bx, by] = endHeading(b, "start");
+    if (ax * bx + ay * by < JOIN_MIN_DOT) continue;
+    bestD = d2;
+    if (d2 < 1e-12) {
+      best = a.concat(b.slice(1));
+    } else {
+      const mid = [
+        (a[a.length - 1][0] + b[0][0]) / 2,
+        (a[a.length - 1][1] + b[0][1]) / 2,
+      ];
+      best = a.concat([mid], b.slice(1));
+    }
+  }
+  return best;
+}
+
+/**
+ * Re-weld recovered centrelines so near-miss endpoints become one continuous
+ * stroke. Runs once at module load — the source data stays untouched.
+ */
+function weldTracePaths(paths: number[][][]): number[][][] {
+  const pieces = paths
+    .map((p) => stripHairpins(p.map((pt) => pt.slice())))
+    .filter((p) => p.length >= 2 && pathLength(p) >= MIN_PATH_LEN);
+
+  let guard = 0;
+  while (guard++ < 500) {
+    let merged = false;
+    outer: for (let i = 0; i < pieces.length; i++) {
+      for (let j = i + 1; j < pieces.length; j++) {
+        const next = tryMerge(pieces[i], pieces[j]);
+        if (!next) continue;
+        pieces[i] = next;
+        pieces.splice(j, 1);
+        merged = true;
+        break outer;
+      }
+    }
+    if (!merged) break;
+  }
+
+  pieces.sort((a, b) => pathLength(a) - pathLength(b));
+  return pieces;
+}
+
+const WELDED_TRACE_PATHS = weldTracePaths(TRACE_PATHS);
+
 /**
  * Fit the traced artwork to the canvas and hand it back as ordinary `FlowLine`s, so
  * the existing draw and SVG-export passes can render it unchanged.
@@ -141,7 +262,8 @@ export function computeInfraTrace(
   // a component's existing state until it remounts, and one `undefined` here turns
   // every coordinate into NaN and blanks the canvas rather than failing visibly.
   const weight = Math.max(0.15, TRACE_WEIGHT * artH * p.lineWidth);
-  const n = TRACE_PATHS.length;
+  const paths = WELDED_TRACE_PATHS;
+  const n = paths.length;
 
   // `variation` gates everything the seed does, so at 0 this is the reference exactly
   // as traced however the seed is set.
@@ -172,7 +294,7 @@ export function computeInfraTrace(
 
   const out: FlowLine[] = [];
   for (let i = 0; i < n; i++) {
-    const src = TRACE_PATHS[i];
+    const src = paths[i];
     // Paths are ordered shortest first, so `i / n` is roughly a length percentile.
     // Dropping is weighted to the short end: losing a stub reads as a board routed a
     // little differently, losing a long sweep reads as damage.

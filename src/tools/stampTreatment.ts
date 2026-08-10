@@ -23,10 +23,6 @@ export interface StampOpts {
   // the scale of the ink. Without this, thicker lines resist the same cutout
   // radius and the breaks vanish.
   lineWeight?: number;
-  // Internal resolution the treatment runs at, 0..1 of full (default 1).
-  // The pipeline needs several blur + pixel-readback rounds per frame, so
-  // slider scrubbing drops this for responsiveness and settles at 1.
-  quality?: number;
 }
 
 /** Strokes the raw linework onto the treatment buffer (transform pre-set). */
@@ -219,7 +215,7 @@ interface StampRender {
 
 /**
  * Execute the stamp/cutout blur+threshold chain over the painted strokes at
- * TREATMENT_DPR × preview resolution (× `quality` while scrubbing).
+ * TREATMENT_DPR × preview resolution.
  * With `captureField`, the FINAL threshold is skipped and the smooth blurred
  * alpha is returned instead — its iso contour is the exact treated outline,
  * which the SVG export traces into real vector paths.
@@ -232,8 +228,7 @@ function runStampPipeline(
   paint: StampPaint,
   captureField = false,
 ): StampRender {
-  const q = Math.min(1, Math.max(0.3, stamp.quality ?? 1));
-  const tDpr = TREATMENT_DPR * q;
+  const tDpr = TREATMENT_DPR;
   const pw = Math.max(1, Math.round(w * tDpr));
   const ph = Math.max(1, Math.round(h * tDpr));
   const a = (stampSrc ??= document.createElement("canvas"));
@@ -245,20 +240,27 @@ function runStampPipeline(
     b.height = ph;
   }
 
-  const [ir, ig, ib] = parseInk(ink);
+  // Opaque ink and full transparency as single machine words. Assembled through
+  // a byte view rather than by shifting, so the channel order matches whatever
+  // the platform's endianness gives a Uint32 view of RGBA bytes.
+  const inkWord = new Uint32Array(1);
+  const inkBytes = new Uint8Array(inkWord.buffer);
+  [inkBytes[0], inkBytes[1], inkBytes[2], inkBytes[3]] = [
+    ...parseInk(ink),
+    255,
+  ];
+  const INK = inkWord[0];
+
+  // The pipeline's hot loop: this runs over every pixel of a buffer several
+  // times the preview's size, once per blur step, so it's written as one 32-bit
+  // write per pixel rather than four byte writes.
   const thresholdAlpha = (tctx: CanvasRenderingContext2D, cut: number) => {
     const img = tctx.getImageData(0, 0, pw, ph);
-    const data = img.data;
+    const bytes = img.data;
+    const words = new Uint32Array(bytes.buffer);
     const T = Math.max(8, Math.round(255 * cut));
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] >= T) {
-        data[i] = ir;
-        data[i + 1] = ig;
-        data[i + 2] = ib;
-        data[i + 3] = 255;
-      } else {
-        data[i + 3] = 0;
-      }
+    for (let p = 0, alpha = 3; p < words.length; p++, alpha += 4) {
+      words[p] = bytes[alpha] >= T ? INK : 0;
     }
     tctx.putImageData(img, 0, 0);
   };
@@ -333,7 +335,7 @@ export function __debugStamp(
   stamp: StampOpts,
   paint: StampPaint,
 ) {
-  const t = runStampPipeline(w, h, ink, { ...stamp, quality: 1 }, paint, true);
+  const t = runStampPipeline(w, h, ink, stamp, paint, true);
   return { field: t.field!, pw: t.pw, ph: t.ph, iso: t.iso!, tDpr: t.tDpr };
 }
 
@@ -357,7 +359,7 @@ export function traceStampPathD(
   stamp: StampOpts,
   paint: StampPaint,
 ): string {
-  const treated = runStampPipeline(w, h, ink, { ...stamp, quality: 1 }, paint, true);
+  const treated = runStampPipeline(w, h, ink, stamp, paint, true);
   return traceStampField(
     treated.field!,
     treated.pw,

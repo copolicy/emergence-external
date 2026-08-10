@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -35,16 +37,19 @@ interface FlowFieldProps {
 export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(FW, FH);
-  const [params, setParams] = useState<FlowParams>(DEFAULT_FLOW);
+  // `params` is the settled snapshot the canvas is built from; `liveParams`
+  // tracks the cursor and drives the sliders (see useScrubbedParams).
+  const {
+    live: liveParams,
+    committed: params,
+    setParam: updateParam,
+    resetParams,
+  } = useScrubbedParams<FlowParams>(DEFAULT_FLOW);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(true);
-  // Treatment render quality: dropped while sliders scrub, 1 at rest.
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
   // re-trace the streamlines, so they're excluded from the deps.
@@ -87,13 +92,12 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
       growth,
       fade,
       params.seed,
-      // While a slider is scrubbing, show untreated draft linework: the
-      // treatment's breaks are resolution-sensitive, so an approximated
-      // preview MISLEADS. At rest the preview is exactly the export.
-      qualityRef.current < 1 ? undefined : stampOpts,
+      // Always the full treatment — never a lower-resolution approximation,
+      // whose breaks differ from the real result and so would MISLEAD. The
+      // preview is exactly the export.
+      stampOpts,
     );
-    // settleTick re-runs the draw with the full treatment after scrubbing.
-  }, [lines, params, ink, background, growth, w, h, fade, stampOpts, settleTick]);
+  }, [lines, params, ink, background, growth, w, h, fade, stampOpts]);
 
   useEffect(() => {
     draw();
@@ -169,27 +173,10 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
     draw();
   }, [recorder.recording, draw]);
 
-  const updateParam = useCallback(
-    <K extends keyof FlowParams>(key: K, value: FlowParams[K]) => {
-      // Scrub with untreated draft linework so slider drags stay fluid;
-      // settle back to the full treatment shortly after the last movement.
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      setParams((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_FLOW);
+    resetParams(DEFAULT_FLOW);
     setInk(INK);
     setBackground(BG);
     setFade(true);
@@ -249,7 +236,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
 
   const renderRow = (key: keyof FlowParams) => {
     const [min, max, step] = FLOW_RANGES[key];
-    const value = params[key];
+    const value = liveParams[key];
     return (
       <label
         key={key}
@@ -267,15 +254,13 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
             onChange={(v) => updateParam(key, v as FlowParams[typeof key])}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) =>
-            updateParam(key, +e.target.value as FlowParams[typeof key])
-          }
+          aria-label={FLOW_LABELS[key]}
+          onChange={(v) => updateParam(key, v as FlowParams[typeof key])}
         />
       </label>
     );

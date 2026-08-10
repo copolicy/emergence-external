@@ -4,6 +4,7 @@ import snapshotUrl from "../data/sf-bay-roads.json?url";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import PaletteColorRow from "../components/PaletteColorRow";
 import RecordButton from "../components/RecordButton";
 import {
@@ -11,6 +12,7 @@ import {
   type RecordTimeline,
 } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -158,13 +160,16 @@ export default function RoadColors({
     ROAD_BASE,
   );
 
-  const [weight, setWeight] = useState(LINE_WEIGHT);
+  // `weight` is the settled value the canvas is built from; `liveLine.weight`
+  // tracks the cursor and drives the slider (see useScrubbedParams).
+  const {
+    live: liveLine,
+    committed: line,
+    setParam: setLineParam,
+  } = useScrubbedParams({ weight: LINE_WEIGHT });
+  const weight = line.weight;
   const [bg, setBg] = useState(BG);
   const [ink, setInk] = useState(INK);
-  // Treatment render quality: dropped while sliders scrub, 1 at rest.
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   // Location the roads are fetched around. Default matches the bundled snapshot
   // loaded on first open; typing a new place fetches it live from Overpass.
@@ -186,23 +191,6 @@ export default function RoadColors({
       stampOptsForStroke({ stamp: STAMP, cutout: CUTOUT, lineWidth: weight }),
     [weight],
   );
-
-  // Scrub with untreated draft linework so slider drags stay fluid; settle
-  // back to the full treatment shortly after the last movement.
-  const scrubbed = useCallback(
-    (set: (v: number) => void) => (v: number) => {
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      set(v);
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
 
   const strokeFor = useCallback(
     (d: Designation, scale = 1) => weight * WEIGHT[d] * scale,
@@ -416,10 +404,10 @@ export default function RoadColors({
         d,
         total,
         safeColor(bg, BG),
-        // While a slider is scrubbing, show untreated draft linework: the
-        // treatment's breaks are resolution-sensitive, so an approximated
-        // preview MISLEADS. At rest the preview is exactly the export.
-        qualityRef.current < 1 ? undefined : stampOpts,
+        // Always the full treatment — never a lower-resolution approximation,
+        // whose breaks differ from the real result and so would MISLEAD. The
+        // preview is exactly the export.
+        stampOpts,
       );
       roadsDrawnRef.current = total;
     },
@@ -453,9 +441,8 @@ export default function RoadColors({
     if (animating) return;
     const d = dataRef.current;
     if (d) renderStatic(d);
-    // settleTick re-runs the draw with the full treatment after scrubbing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, bg, view, ink, w, h, animating, settleTick]);
+  }, [weight, bg, view, ink, w, h, animating]);
 
   // Load the saved Bay Area snapshot (no network round-trip to Overpass).
   const loadSaved = useCallback(async () => {
@@ -781,13 +768,13 @@ export default function RoadColors({
           onChange={onChange}
         />
       </span>
-      <input
-        type="range"
+      <ParamRangeTrack
+        value={value}
         min={min}
         max={max}
         step={stepv}
-        value={value}
-        onChange={(e) => onChange(+e.target.value)}
+        aria-label={label}
+        onChange={onChange}
       />
     </label>
   );
@@ -880,7 +867,9 @@ export default function RoadColors({
 
       <div className="specimen-tree__group">
         <div className="specimen-tree__sliders">
-          {slider("Line Weight", weight, 0.3, 3, 0.01, scrubbed(setWeight))}
+          {slider("Line Weight", liveLine.weight, 0.3, 3, 0.01, (v) =>
+            setLineParam("weight", v),
+          )}
         </div>
         <PaletteColorRow label="Stroke Color" value={ink} onChange={setInk} />
       </div>

@@ -17,7 +17,7 @@ interface ToolRailControlsProps {
   header?: ReactNode;
   config: CanvasSizeConfig;
   onConfigChange: (config: CanvasSizeConfig) => void;
-  /** When set, shows the Fade switch above the param sliders. */
+  /** When set, shows the Fade switch under the canvas size control. */
   fade?: boolean;
   onFadeChange?: (value: boolean) => void;
   fadeTip?: string;
@@ -87,9 +87,6 @@ export default function ToolRailControls({
       <div className="specimen-tree__group">
         <span className="specimen-tree__group-title">Canvas</span>
         <AspectRatioControl value={config} onChange={onConfigChange} />
-      </div>
-
-      <div className="specimen-tree__group rail-section">
         {showFade && (
           <label
             className="tool-param-row has-tip"
@@ -120,6 +117,9 @@ export default function ToolRailControls({
             </span>
           </label>
         )}
+      </div>
+
+      <div className="specimen-tree__group rail-section">
         <div className="specimen-tree__sliders">{sliders}</div>
       </div>
 

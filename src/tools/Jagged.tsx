@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -34,7 +36,14 @@ interface JaggedProps {
 export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(JW, JH);
-  const [params, setParams] = useState<JaggedParams>(DEFAULT_JAGGED);
+  // `params` is the settled snapshot the canvas is built from; `liveParams`
+  // tracks the cursor and drives the sliders (see useScrubbedParams).
+  const {
+    live: liveParams,
+    committed: params,
+    setParam: updateParam,
+    resetParams,
+  } = useScrubbedParams<JaggedParams>(DEFAULT_JAGGED);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
@@ -42,10 +51,6 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
   // Traces read as etched copper — crisp butt ends, no dissolve. The toggle is
   // still there, it just starts off.
   const [fade, setFade] = useState(false);
-  // Treatment render quality: dropped while sliders scrub, 1 at rest.
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
   // re-trace the ridges, so they're excluded from the deps.
@@ -88,13 +93,12 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
       growth,
       fade,
       params.seed,
-      // While a slider is scrubbing, show untreated draft linework: the
-      // treatment's breaks are resolution-sensitive, so an approximated
-      // preview MISLEADS. At rest the preview is exactly the export.
-      qualityRef.current < 1 ? undefined : stampOpts,
+      // Always the full treatment — never a lower-resolution approximation,
+      // whose breaks differ from the real result and so would MISLEAD. The
+      // preview is exactly the export.
+      stampOpts,
     );
-    // settleTick re-runs the draw with the full treatment after scrubbing.
-  }, [lines, params, ink, background, growth, w, h, fade, stampOpts, settleTick]);
+  }, [lines, params, ink, background, growth, w, h, fade, stampOpts]);
 
   useEffect(() => {
     draw();
@@ -169,27 +173,10 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
     draw();
   }, [recorder.recording, draw]);
 
-  const updateParam = useCallback(
-    <K extends keyof JaggedParams>(key: K, value: JaggedParams[K]) => {
-      // Scrub with untreated draft linework so slider drags stay fluid;
-      // settle back to the full treatment shortly after the last movement.
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      setParams((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_JAGGED);
+    resetParams(DEFAULT_JAGGED);
     setInk(INK);
     setBackground(BG);
     setFade(false);
@@ -251,7 +238,7 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
 
   const renderRow = (key: keyof JaggedParams) => {
     const [min, max, step] = JAGGED_RANGES[key];
-    const value = params[key];
+    const value = liveParams[key];
     return (
       <label key={key} className="tool-param-row has-tip" data-tip={JAGGED_HINTS[key]}>
         <span className="tool-param-row__header">
@@ -265,13 +252,13 @@ export default function Jagged({ controlsTarget = null }: JaggedProps = {}) {
             onChange={(v) => updateParam(key, v as JaggedParams[typeof key])}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) => updateParam(key, +e.target.value as JaggedParams[typeof key])}
+          aria-label={JAGGED_LABELS[key]}
+          onChange={(v) => updateParam(key, v as JaggedParams[typeof key])}
         />
       </label>
     );

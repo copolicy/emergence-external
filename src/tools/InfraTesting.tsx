@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import {
   easeGrowth,
@@ -9,6 +10,7 @@ import {
   useGrowthTimeline,
 } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -48,15 +50,19 @@ export default function InfraTesting({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(IW, IH);
-  const [params, setParams] = useState<InfraTraceParams>(DEFAULT_INFRA_TRACE);
+  // `params` is the settled snapshot the canvas is built from; `liveParams`
+  // tracks the cursor and drives the sliders (see useScrubbedParams).
+  const {
+    live: liveParams,
+    committed: params,
+    setParam: updateParam,
+    resetParams,
+  } = useScrubbedParams<InfraTraceParams>(DEFAULT_INFRA_TRACE);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(false);
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   const lines = useMemo(
     () => computeInfraTrace(w, h, params),
@@ -96,9 +102,9 @@ export default function InfraTesting({
       growth,
       fade,
       params.seed,
-      qualityRef.current < 1 ? undefined : stampOpts,
+      stampOpts,
     );
-  }, [lines, params, ink, background, growth, w, h, fade, stampOpts, settleTick]);
+  }, [lines, params, ink, background, growth, w, h, fade, stampOpts]);
 
   useEffect(() => {
     draw();
@@ -169,25 +175,10 @@ export default function InfraTesting({
     draw();
   }, [recorder.recording, draw]);
 
-  const updateParam = useCallback(
-    <K extends keyof InfraTraceParams>(key: K, value: InfraTraceParams[K]) => {
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      setParams((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_INFRA_TRACE);
+    resetParams(DEFAULT_INFRA_TRACE);
     setInk(INK);
     setBackground(BG);
     setFade(false);
@@ -251,7 +242,7 @@ export default function InfraTesting({
 
   const renderRow = (key: string) => {
     const [min, max, step] = INFRA_TRACE_RANGES[key];
-    const value = params[key as keyof InfraTraceParams] as number;
+    const value = liveParams[key as keyof InfraTraceParams] as number;
     const k = key as keyof InfraTraceParams;
     return (
       <label
@@ -270,15 +261,13 @@ export default function InfraTesting({
             onChange={(v) => updateParam(k, v as InfraTraceParams[typeof k])}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) =>
-            updateParam(k, +e.target.value as InfraTraceParams[typeof k])
-          }
+          aria-label={INFRA_TRACE_LABELS[key]}
+          onChange={(v) => updateParam(k, v as InfraTraceParams[typeof k])}
         />
       </label>
     );

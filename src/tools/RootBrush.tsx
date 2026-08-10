@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -79,7 +81,14 @@ export default function RootBrush({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
   const { w, h, exportDims, pxScale, config, setConfig } = useCanvasDimensions(RW, RH);
-  const [params, setParams] = useState<RootParams>(DEFAULT_ROOT);
+  // `params` is the settled snapshot the canvas is built from; `liveParams`
+  // tracks the cursor and drives the sliders (see useScrubbedParams).
+  const {
+    live: liveParams,
+    committed: params,
+    setParam: updateParam,
+    resetParams,
+  } = useScrubbedParams<RootParams>(DEFAULT_ROOT);
   const [brushState, setBrushState] = useState<Brush>("organic");
   // Controlled by the parent when `brushProp` is supplied; otherwise local.
   const brush = brushProp ?? brushState;
@@ -90,10 +99,6 @@ export default function RootBrush({
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
-  // Treatment render quality: dropped while sliders scrub, 1 at rest.
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   const buf = useMemo(
     () => (image ? sampleLuminance(image, w, h) : null),
@@ -186,14 +191,12 @@ export default function RootBrush({
       growth,
       true,
       brush,
-      // While a slider is scrubbing, show untreated draft linework instead of
-      // a lower-resolution treatment: the treatment's breaks are resolution-
-      // sensitive, so an approximated preview MISLEADS — it shows more breaks
-      // than the real result. At rest the preview is exactly the export.
-      qualityRef.current < 1 ? undefined : stampOpts,
+      // Always the full treatment — never a lower-resolution approximation,
+      // whose breaks differ from the real result and so would MISLEAD. The
+      // preview is exactly the export.
+      stampOpts,
     );
-    // settleTick re-runs the draw with the full treatment after scrubbing.
-  }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts, settleTick]);
+  }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -397,27 +400,10 @@ export default function RootBrush({
     scheduleDraw();
   }, [recorder.recording, scheduleDraw]);
 
-  const updateParam = useCallback(
-    <K extends keyof RootParams>(key: K, value: RootParams[K]) => {
-      // Scrub at reduced treatment resolution so slider drags stay fluid;
-      // settle back to full quality shortly after the last movement.
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      setParams((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_ROOT);
+    resetParams(DEFAULT_ROOT);
     setBrush("organic");
     setInk(INK);
     setBackground(BG);
@@ -478,7 +464,7 @@ export default function RootBrush({
 
   const renderRow = (key: keyof RootParams) => {
     const [min, max, step] = ROOT_RANGES[key];
-    const value = params[key];
+    const value = liveParams[key];
     return (
       <label
         key={key}
@@ -496,15 +482,13 @@ export default function RootBrush({
             onChange={(v) => updateParam(key, v as RootParams[typeof key])}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) =>
-            updateParam(key, +e.target.value as RootParams[typeof key])
-          }
+          aria-label={ROOT_LABELS[key]}
+          onChange={(v) => updateParam(key, v as RootParams[typeof key])}
         />
       </label>
     );

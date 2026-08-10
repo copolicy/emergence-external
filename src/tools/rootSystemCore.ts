@@ -91,7 +91,7 @@ export const ROOT_RANGES: Record<keyof RootParams, [number, number, number]> = {
   // Ceiling well short of the full erode: the pass eats a fraction of the ink's
   // own half-width, and the top of that range takes linework this thin away
   // altogether rather than nicking it (see CUTOUT_MAX_ERODE in stampTreatment).
-  cutout: [0.15, 0.4, 0.01],
+  cutout: [0.2, 0.4, 0.01],
   hairDensity: [0, 1, 0.01],
   bedrockOffset: [0, 0.4, 0.01],
   threshold: [0, 0.6, 0.01],
@@ -133,8 +133,7 @@ export const ROOT_HINTS: Record<keyof RootParams, string> = {
     "Base stroke width for lateral roots. Branches scale up from here by how much subtree feeds them.",
   taper:
     "Shapes the ends of the roots. Negative wisps them to a fine point; zero keeps a uniform weight; positive swells them into rounded, balled tips.",
-  coil:
-    "How much each root end coils into a tendril curl. Zero leaves the ends straight; higher winds a tighter, longer spiral.",
+  coil: "How much each root end coils into a tendril curl. Zero leaves the ends straight; higher winds a tighter, longer spiral.",
   endThickness:
     "Engineered brush: absolute width of the terminal pad at each trace end, independent of the connecting trace — so thin and thick traces get the same-size end.",
   stamp:
@@ -286,7 +285,9 @@ function soilAttractors(
   rng: () => number,
   p: RootParams,
 ): Attractors {
-  const m = 24;
+  // Match the growth inset (marginB in growRoots) so attractors never sit
+  // outside the clamp region density/seed scramble can otherwise pack against.
+  const m = 28;
   const x: number[] = [];
   const y: number[] = [];
   const scale = 0.012;
@@ -319,13 +320,14 @@ function imageAttractors(
 ): Attractors {
   const x: number[] = [];
   const y: number[] = [];
+  const m = 28;
   let tries = 0;
   const maxTries = count * 80;
   while (x.length < count && tries < maxTries) {
     tries++;
-    const sx = rng() * buf.width;
+    const sx = m + rng() * Math.max(1, buf.width - 2 * m);
     const sy = rng() * buf.height;
-    if (sy < bedrockY) continue; // only the soil below the bedrock line
+    if (sy < bedrockY + 6 || sy > buf.height - m) continue; // soil inset only
     const d = toneAt(buf, sx, sy, p);
     if (d < p.threshold) continue;
     if (rng() < d) {
@@ -478,7 +480,10 @@ export function growRoots(
       ) {
         mainTips++; // this run ends and two begin: net +1 descending tip
         const remain = budget - s - 1;
-        const childBudget = Math.max(8, Math.floor(remain * (0.7 + rng() * 0.25)));
+        const childBudget = Math.max(
+          8,
+          Math.floor(remain * (0.7 + rng() * 0.25)),
+        );
         const div = 0.4 + rng() * 0.5; // persistent divergence per child
         growMain(x, y, prev, dir - div, childBudget, depth + 1);
         growMain(x, y, prev, dir + div, childBudget, depth + 1);
@@ -489,7 +494,10 @@ export function growRoots(
 
   for (let c = 0; c < crownCount; c++) {
     const fx = crownCount === 1 ? 0.5 : (c + 0.5) / crownCount;
-    const cx = fieldW * fx + (rng() - 0.5) * fieldW * 0.04;
+    const cx = Math.min(
+      fieldW - marginB,
+      Math.max(marginB, fieldW * fx + (rng() - 0.5) * fieldW * 0.04),
+    );
     const crown = addNode(cx, bedrockY, -1, true);
     mainTips = 1;
     growMain(cx, bedrockY, crown, Math.PI / 2, steps, 0);
@@ -521,7 +529,12 @@ export function growRoots(
       for (const r of [20 + rng() * 8, 36 + rng() * 12]) {
         const ax = px[i] + dx * r + (rng() - 0.5) * 6;
         const ay = py[i] + dy * r + (rng() - 0.5) * 6;
-        if (ay <= bedrockY + 4 || ax < 4 || ax > fieldW - 4 || ay > fieldH - 4)
+        if (
+          ay <= bedrockY + 4 ||
+          ax < marginB ||
+          ax > fieldW - marginB ||
+          ay > fieldH - marginB
+        )
           continue;
         attr.x.push(ax);
         attr.y.push(ay);
@@ -617,9 +630,15 @@ export function growRoots(
         else if (diff < -maxTurn) diff = -maxTurn;
         a = cur + diff;
       }
-      // Clamp to the soil: roots never rise above the bedrock datum.
-      const ny2 = Math.max(bedrockY, ny + Math.sin(a) * D);
-      addNode(nx + Math.cos(a) * D, ny2, nodeIdx);
+      // Clamp to the soil inset (same margin as taproots): density/seed can
+      // pack attractors near the rim, and without side/bottom bounds the walk
+      // keeps stepping past the canvas edge.
+      let nx2 = nx + Math.cos(a) * D;
+      let ny2 = Math.max(bedrockY, ny + Math.sin(a) * D);
+      if (nx2 < marginB) nx2 = marginB;
+      else if (nx2 > fieldW - marginB) nx2 = fieldW - marginB;
+      if (ny2 > fieldH - marginB) ny2 = fieldH - marginB;
+      addNode(nx2, ny2, nodeIdx);
     });
 
     for (let a = 0; a < A; a++) {
@@ -948,7 +967,11 @@ export function growRoots(
     }
     for (let i = 0; i < N; i++) {
       if (!keep[i] || parent[i] < 0 || keptKids[i] > 0) continue; // kept tips
-      const hsh = hash2(Math.round(px[i]), Math.round(py[i]), (p.seed ^ 0x9e37) >>> 0);
+      const hsh = hash2(
+        Math.round(px[i]),
+        Math.round(py[i]),
+        (p.seed ^ 0x9e37) >>> 0,
+      );
       const dir = hsh < 0.5 ? 1 : -1;
       let x = px[i];
       let y = py[i];
@@ -963,6 +986,14 @@ export function growRoots(
         const len = (2.4 / RES) * (1 - 0.45 * frac);
         const nx = x + Math.cos(ang) * len;
         const ny = y + Math.sin(ang) * len;
+        // Stop the coil at the soil inset so tendrils don't wind off-canvas.
+        if (
+          nx < marginB ||
+          nx > fieldW - marginB ||
+          ny < bedrockY ||
+          ny > fieldH - marginB
+        )
+          break;
         // Hold full weight through the body, then ease to a point over the last
         // stretch (smoothstep) — a smooth pointed tendril tip, not a stepped one.
         const TIP_POINT = 0.72; // frac after which the coil tapers to a point

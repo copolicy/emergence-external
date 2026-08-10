@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import AspectRatioControl from "../components/AspectRatioControl";
 import ExportButtons from "../components/ExportButtons";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import PaletteColorRow from "../components/PaletteColorRow";
 import RecordButton from "../components/RecordButton";
 import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
@@ -399,13 +400,13 @@ export default function RootsText({ controlsTarget = null }: RootsTextProps = {}
             onChange={(v) => updateParam(key, v as RootsTextParams[typeof key])}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) => updateParam(key, +e.target.value as RootsTextParams[typeof key])}
+          aria-label={ROOTS_TEXT_LABELS[key]}
+          onChange={(v) => updateParam(key, v as RootsTextParams[typeof key])}
         />
       </label>
     );

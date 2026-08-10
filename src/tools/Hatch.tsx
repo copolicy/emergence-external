@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
+import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
@@ -47,16 +49,19 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(HW, HH);
-  const [params, setParams] = useState<HatchParams>(DEFAULT_HATCH);
+  // `params` is the settled snapshot the canvas is built from; `liveParams`
+  // tracks the cursor and drives the sliders (see useScrubbedParams).
+  const {
+    live: liveParams,
+    committed: params,
+    setParam: updateParam,
+    resetParams,
+  } = useScrubbedParams<HatchParams>(DEFAULT_HATCH);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(true);
-  // Treatment render quality: dropped while sliders scrub, 1 at rest.
-  const qualityRef = useRef(1);
-  const settleTimer = useRef<number | undefined>(undefined);
-  const [settleTick, setSettleTick] = useState(0);
 
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
   // re-scatter the field, so they're excluded from the deps.
@@ -98,13 +103,12 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
       growth,
       fade,
       params.seed,
-      // While a slider is scrubbing, show untreated draft linework: the
-      // treatment's breaks are resolution-sensitive, so an approximated
-      // preview MISLEADS. At rest the preview is exactly the export.
-      qualityRef.current < 1 ? undefined : stampOpts,
+      // Always the full treatment — never a lower-resolution approximation,
+      // whose breaks differ from the real result and so would MISLEAD. The
+      // preview is exactly the export.
+      stampOpts,
     );
-    // settleTick re-runs the draw with the full treatment after scrubbing.
-  }, [lines, ink, background, growth, w, h, fade, params.seed, stampOpts, settleTick]);
+  }, [lines, ink, background, growth, w, h, fade, params.seed, stampOpts]);
 
   useEffect(() => {
     draw();
@@ -178,27 +182,10 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
     draw();
   }, [recorder.recording, draw]);
 
-  const updateParam = useCallback(
-    <K extends keyof HatchParams>(key: K, value: HatchParams[K]) => {
-      // Scrub with untreated draft linework so slider drags stay fluid;
-      // settle back to the full treatment shortly after the last movement.
-      qualityRef.current = 0.5;
-      window.clearTimeout(settleTimer.current);
-      settleTimer.current = window.setTimeout(() => {
-        qualityRef.current = 1;
-        setSettleTick((t) => t + 1);
-      }, 160);
-      setParams((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
-
-  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
-
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
-    setParams(DEFAULT_HATCH);
+    resetParams(DEFAULT_HATCH);
     setInk(INK);
     setBackground(BG);
     setFade(true);
@@ -258,7 +245,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
 
   const renderRow = (key: keyof HatchParams) => {
     const [min, max, step] = HATCH_RANGES[key];
-    const value = flipParam(key, params[key]);
+    const value = flipParam(key, liveParams[key]);
     const commit = (v: number) =>
       updateParam(key, flipParam(key, v) as HatchParams[typeof key]);
     return (
@@ -278,13 +265,13 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
             onChange={(v) => commit(v)}
           />
         </span>
-        <input
-          type="range"
+        <ParamRangeTrack
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) => commit(+e.target.value)}
+          aria-label={HATCH_LABELS[key]}
+          onChange={(v) => commit(v)}
         />
       </label>
     );
