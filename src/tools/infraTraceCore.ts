@@ -35,15 +35,14 @@ export interface InfraTraceParams extends JaggedParams {
 export const DEFAULT_INFRA_TRACE: InfraTraceParams = {
   ...DEFAULT_JAGGED,
   seed: INFRA_REFERENCE_SEED,
-  // ~1 keeps the source pitch-to-weight ratio (~3.14).
-  lineWidth: 0.95,
+  lineWidth: 0.41,
   scale: 1,
   inset: 0.04,
   mirror: 1,
   nudgeX: 0,
   nudgeY: 0,
   variation: 0.7,
-  stamp: 0.3,
+  stamp: 0.24,
   cutout: 0.62,
 };
 

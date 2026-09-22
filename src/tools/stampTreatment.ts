@@ -139,6 +139,182 @@ function stampSteps(stamp: StampOpts): { blur: number; cut: number }[] {
   return steps;
 }
 
+// ---- the same chain, run on the GPU ----------------------------------------
+// The passes below are a blur and a hard cut on alpha, repeated. Run through
+// canvas 2D they cost ~330ms a frame at the reference resolution — and not
+// because of the readback: reading pixels back is what makes the browser stop
+// accelerating that canvas at all, so the BLURS end up on the CPU too, at ~60ms
+// each. Expressed instead as one SVG filter chain and never read back, the
+// identical work runs on the GPU in about 1.5ms, which is what lets the growth
+// animation draw the real treated ink on every frame instead of a stand-in.
+//
+// feGaussianBlur is bit-identical to canvas's own `blur()` at the same sigma
+// (verified pixel-for-pixel), so only the cut has to be matched by hand: see
+// `cutLevel`.
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+// Slope steep enough that the transfer function is a step for any 8-bit input:
+// the ramp is narrower than a thousandth of one level.
+const CUT_SLOPE = 30000;
+let filterSvg: SVGSVGElement | null = null;
+let filterKey = "";
+let filterSupport: boolean | null = null;
+let gpuSrc: HTMLCanvasElement | null = null;
+let gpuOut: HTMLCanvasElement | null = null;
+let filterSeq = 0;
+let filterId = "";
+
+/**
+ * The alpha level a pass's cut actually lands on.
+ *
+ * The canvas 2D pipeline compares the 8-BIT alpha that getImageData hands back
+ * against `round(255 * cut)`, so a float alpha `a` passes when
+ * `round(255a) >= T`, i.e. when `a >= (T - 0.5) / 255`. The filter chain works
+ * in continuous alpha, so it has to be given that same level rather than `cut`
+ * — otherwise every pass sits up to half a level off and the error compounds
+ * through the chain.
+ */
+function cutLevel(cut: number): number {
+  const T = Math.max(8, Math.round(255 * cut));
+  return (T - 0.5) / 255;
+}
+
+/** Build (or rebuild) the filter chain for a treatment, and return its id. */
+function ensureFilter(
+  stamp: StampOpts,
+  ink: string,
+  pw: number,
+  ph: number,
+): string {
+  const steps = stampSteps(stamp);
+  const tDpr = TREATMENT_DPR;
+  const key = `${pw}x${ph}|${ink}|${steps
+    .map((s) => `${s.blur}:${s.cut}`)
+    .join(",")}`;
+  if (key === filterKey && filterSvg) return filterId;
+
+  if (!filterSvg) {
+    const svg = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
+    // Out of the layout and out of the accessibility tree, but still in the
+    // document — a url() filter reference only resolves against a rendered tree.
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.cssText =
+      "position:absolute;width:0;height:0;overflow:hidden;pointer-events:none";
+    document.body.appendChild(svg);
+    filterSvg = svg;
+  }
+
+  // A fresh id per rebuild: Chrome caches a filter by reference, and reusing
+  // the id can leave a stale chain applied.
+  filterId = `stamp-ink-${++filterSeq}`;
+  const chain = steps
+    .map((step, i) => {
+      const level = cutLevel(step.cut);
+      const last = i === steps.length - 1;
+      return (
+        `<feGaussianBlur stdDeviation="${step.blur * tDpr}"/>` +
+        `<feComponentTransfer${last ? ' result="treated"' : ""}>` +
+        `<feFuncA type="linear" slope="${CUT_SLOPE}" ` +
+        `intercept="${0.5 - CUT_SLOPE * level}"/></feComponentTransfer>`
+      );
+    })
+    .join("");
+  // The canvas path writes the ink colour along with the alpha. The transfer
+  // functions only touch alpha, and un-premultiplying a nearly transparent
+  // pixel leaves its colour noisy, so flood flat ink through the treated alpha
+  // rather than keeping whatever colour survived the blurs.
+  filterSvg.innerHTML =
+    `<filter id="${filterId}" x="0" y="0" width="${pw}" height="${ph}" ` +
+    `filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">` +
+    chain +
+    `<feFlood flood-color="${ink}" flood-opacity="1"/>` +
+    `<feComposite operator="in" in2="treated"/>` +
+    `</filter>`;
+  filterKey = key;
+  return filterId;
+}
+
+/**
+ * Whether this browser applies a `url(#…)` filter on a 2D context. Chrome and
+ * Firefox do; a browser that does not silently leaves `ctx.filter` as "none"
+ * and would draw the raw linework, so the canvas path has to take over.
+ */
+function svgFilterSupported(): boolean {
+  if (filterSupport !== null) return filterSupport;
+  try {
+    const svg = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.style.cssText = "position:absolute;width:0;height:0";
+    svg.innerHTML =
+      `<filter id="stamp-ink-probe" x="0" y="0" width="1" height="1" ` +
+      `filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">` +
+      `<feComponentTransfer><feFuncA type="linear" slope="1000" intercept="-100"/>` +
+      `</feComponentTransfer></filter>`;
+    document.body.appendChild(svg);
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    const x = c.getContext("2d", { willReadFrequently: true })!;
+    x.fillStyle = "rgba(0,0,0,0.5)";
+    x.fillRect(0, 0, 1, 1);
+    const probe = document.createElement("canvas");
+    probe.width = probe.height = 1;
+    const px = probe.getContext("2d", { willReadFrequently: true })!;
+    px.filter = "url(#stamp-ink-probe)";
+    const applied = px.filter !== "none";
+    px.drawImage(c, 0, 0);
+    px.filter = "none";
+    // slope 1000 / intercept -100 drives alpha 0.5 hard to 1.
+    const alpha = px.getImageData(0, 0, 1, 1).data[3];
+    svg.remove();
+    filterSupport = applied && alpha === 255;
+  } catch {
+    filterSupport = false;
+  }
+  return filterSupport;
+}
+
+/**
+ * Run the treatment as a single GPU filter chain. Neither canvas here is ever
+ * read back, which is what keeps them accelerated — see the note above.
+ */
+function runStampPipelineGPU(
+  w: number,
+  h: number,
+  ink: string,
+  stamp: StampOpts,
+  paint: StampPaint,
+): StampRender {
+  const tDpr = TREATMENT_DPR;
+  const pw = Math.max(1, Math.round(w * tDpr));
+  const ph = Math.max(1, Math.round(h * tDpr));
+  const a = (gpuSrc ??= document.createElement("canvas"));
+  const b = (gpuOut ??= document.createElement("canvas"));
+  if (a.width !== pw || a.height !== ph) {
+    a.width = pw;
+    a.height = ph;
+    b.width = pw;
+    b.height = ph;
+  }
+  const id = ensureFilter(stamp, ink, pw, ph);
+
+  const actx = a.getContext("2d")!;
+  actx.setTransform(1, 0, 0, 1, 0, 0);
+  actx.clearRect(0, 0, pw, ph);
+  actx.setTransform(tDpr, 0, 0, tDpr, 0, 0);
+  paint(actx);
+
+  const bctx = b.getContext("2d")!;
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.clearRect(0, 0, pw, ph);
+  bctx.filter = `url(#${id})`;
+  bctx.drawImage(a, 0, 0);
+  bctx.filter = "none";
+  return { canvas: b, pw, ph, tDpr };
+}
+
 // Ping-pong offscreens reused across frames so the growth animation doesn't
 // allocate full canvases per tick.
 let stampSrc: HTMLCanvasElement | null = null;
@@ -315,7 +491,9 @@ export function drawStamped(
   stamp: StampOpts,
   paint: StampPaint,
 ) {
-  const treated = runStampPipeline(w, h, ink, stamp, paint);
+  const treated = svgFilterSupported()
+    ? runStampPipelineGPU(w, h, ink, stamp, paint)
+    : runStampPipeline(w, h, ink, stamp, paint);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   blitSteppedDown(
     treated.canvas,
@@ -562,3 +740,4 @@ function traceStampField(
   }
   return parts.join("");
 }
+

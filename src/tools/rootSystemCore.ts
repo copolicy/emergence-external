@@ -1181,7 +1181,83 @@ export function growRoots(
     e.order *= invMaxT;
     e.orderEnd *= invMaxT;
   }
+  evenOutGrowthPace(edges, hairs);
   return { edges, hairs, bedrockY };
+}
+
+// How far the reveal clock is pulled toward a constant rate of new ink (0 = the
+// raw schedule, 1 = perfectly even). The raw schedule measures time in root
+// LENGTH, which is not the same as ink appearing on screen: the crown's few
+// thick segments and the long tail of hair-fine tendril tips both run at their
+// own pace, so the drawing surges in the middle and then crawls through a last
+// stretch where almost nothing is left to draw. Partial rather than full, so
+// the growth still breathes — laterals still burst and lull — it just never
+// stalls.
+const PACE_EVENNESS = 0.65;
+const PACE_BINS = 256;
+
+/**
+ * Re-time the reveal so ink arrives at a near-constant rate. Builds the
+ * cumulative distribution of ink area over the schedule and warps the clock
+ * toward it. The warp is monotonic, so parents still finish before their
+ * children start, and progress 0/1 are fixed points — the finished drawing and
+ * every export are untouched.
+ */
+function evenOutGrowthPace(edges: RootEdge[], hairs: RootEdge[]) {
+  const bins = new Float64Array(PACE_BINS);
+  let total = 0;
+  const accumulate = (list: RootEdge[], weight: number) => {
+    for (const e of list) {
+      // Ink area, not segment count: a thick taproot step covers far more of
+      // the frame than a tendril step of the same length.
+      const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+      const amount = len * Math.max(e.w, 0.05) * weight;
+      if (amount <= 0) continue;
+      // Spread each segment across the span it is drawn over, so a long slow
+      // segment counts as ink in flight rather than a spike at its end.
+      const lo = Math.min(1, Math.max(0, e.order));
+      const hi = Math.min(1, Math.max(lo, e.orderEnd));
+      const b0 = Math.min(PACE_BINS - 1, Math.floor(lo * PACE_BINS));
+      const b1 = Math.min(PACE_BINS - 1, Math.floor(hi * PACE_BINS));
+      const share = amount / (b1 - b0 + 1);
+      for (let b = b0; b <= b1; b++) bins[b] += share;
+      total += amount;
+    }
+  };
+  accumulate(edges, 1);
+  accumulate(hairs, 0.42); // drawn faint, so they read as less ink
+  if (total <= 0) return;
+
+  // cdf[i] = fraction of all ink drawn by the end of bin i.
+  const cdf = new Float64Array(PACE_BINS + 1);
+  let run = 0;
+  for (let i = 0; i < PACE_BINS; i++) {
+    run += bins[i];
+    cdf[i + 1] = run / total;
+  }
+
+  const warp = (t: number) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    const x = t * PACE_BINS;
+    const i = Math.min(PACE_BINS - 1, Math.floor(x));
+    const f = x - i;
+    const even = cdf[i] + (cdf[i + 1] - cdf[i]) * f;
+    return t + (even - t) * PACE_EVENNESS;
+  };
+
+  const MIN_SPAN = 1e-5;
+  for (const list of [edges, hairs]) {
+    for (const e of list) {
+      const a = warp(e.order);
+      // Never collapse a span to nothing — a segment with no span pops in whole
+      // instead of extending — but never run past the end of the clock either,
+      // or the last segment would still be mid-extension at full progress.
+      const b = Math.min(1, Math.max(warp(e.orderEnd), a + MIN_SPAN));
+      e.order = Math.min(a, b - MIN_SPAN * 0.1);
+      e.orderEnd = b;
+    }
+  }
 }
 
 function strokeRootSegment(
@@ -1191,16 +1267,24 @@ function strokeRootSegment(
   widthOverride?: number,
 ) {
   if (progress <= e.order) return;
+  // Canvas IGNORES a non-positive lineWidth and keeps whatever was set last, so
+  // a stroke the treatment erases has to be skipped outright — left to fall
+  // through it would be drawn at some other stroke's width.
+  const width = widthOverride ?? e.w;
+  if (!(width > 0)) return;
   let x2 = e.x2;
   let y2 = e.y2;
   const span = e.orderEnd - e.order;
   if (span > 1e-6 && progress < e.orderEnd) {
-    const raw = (progress - e.order) / span;
-    const t = 1 - (1 - raw) * (1 - raw);
+    // Linear: the tip advances at a constant speed along the segment. An ease
+    // inside the segment would make every one of the thousands of 6px steps
+    // shoot out and brake, which reads as a shimmer along the whole growth
+    // front rather than as easing.
+    const t = (progress - e.order) / span;
     x2 = e.x1 + (e.x2 - e.x1) * t;
     y2 = e.y1 + (e.y2 - e.y1) * t;
   }
-  ctx.lineWidth = widthOverride ?? e.w;
+  ctx.lineWidth = width;
   ctx.beginPath();
   ctx.moveTo(e.x1, e.y1);
   ctx.lineTo(x2, y2);

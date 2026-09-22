@@ -27,7 +27,7 @@ import {
   type RootParams,
 } from "./rootSystemCore";
 
-const GROWTH_MS = 12000;
+const GROWTH_MS = 10000;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 6;
 
@@ -147,56 +147,67 @@ export default function RootBrush({
     [w, h],
   );
 
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const cssDpr = window.devicePixelRatio || 1;
+  // A frame of the play-in overrides the settled growth value with its own
+  // `progress`; omitted (every settled draw) means progress-from-state. Either
+  // way the ink is the real treatment — see drawStamped.
+  const draw = useCallback(
+    (frame?: { progress: number }) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const cssDpr = window.devicePixelRatio || 1;
 
-    let drawDpr: number;
-    if (isFullscreen) {
-      const { dw, dh } = viewportFitSize(w, h, window.innerWidth, window.innerHeight);
-      const pixelW = Math.round(dw * cssDpr * zoom);
-      const pixelH = Math.round(dh * cssDpr * zoom);
-      canvas.width = pixelW;
-      canvas.height = pixelH;
-      canvas.style.width = `${dw * zoom}px`;
-      canvas.style.height = `${dh * zoom}px`;
-      drawDpr = pixelW / w;
-    } else {
-      // Like fullscreen: render at the canvas's DISPLAYED size, so device
-      // pixels map 1:1 onto the screen instead of the browser rescaling the
-      // backing store — the inline preview shows exactly what fullscreen does.
-      const cssW = canvas.getBoundingClientRect().width || w;
-      const pixelW = Math.round(cssW * cssDpr);
-      const pixelH = Math.round(pixelW * (h / w));
-      canvas.width = pixelW;
-      canvas.height = pixelH;
-      canvas.style.width = "";
-      canvas.style.height = "";
-      canvas.style.transform = "";
-      drawDpr = pixelW / w;
-    }
+      let drawDpr: number;
+      // Assigning width/height reallocates and clears the backing store, so
+      // only do it when the size actually changed — during the play-in this
+      // runs every frame.
+      const resize = (pw: number, ph: number) => {
+        if (canvas.width !== pw) canvas.width = pw;
+        if (canvas.height !== ph) canvas.height = ph;
+      };
+      if (isFullscreen) {
+        const { dw, dh } = viewportFitSize(w, h, window.innerWidth, window.innerHeight);
+        const pixelW = Math.round(dw * cssDpr * zoom);
+        const pixelH = Math.round(dh * cssDpr * zoom);
+        resize(pixelW, pixelH);
+        canvas.style.width = `${dw * zoom}px`;
+        canvas.style.height = `${dh * zoom}px`;
+        drawDpr = pixelW / w;
+      } else {
+        // Like fullscreen: render at the canvas's DISPLAYED size, so device
+        // pixels map 1:1 onto the screen instead of the browser rescaling the
+        // backing store — the inline preview shows exactly what fullscreen does.
+        const cssW = canvas.getBoundingClientRect().width || w;
+        const pixelW = Math.round(cssW * cssDpr);
+        const pixelH = Math.round(pixelW * (h / w));
+        resize(pixelW, pixelH);
+        canvas.style.width = "";
+        canvas.style.height = "";
+        canvas.style.transform = "";
+        drawDpr = pixelW / w;
+      }
 
-    setCanvasAspectVars(canvas, w, h);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    drawRoots(
-      ctx,
-      drawDpr,
-      w,
-      h,
-      result,
-      safeColor(ink, INK),
-      safeColor(background, BG),
-      growth,
-      true,
-      brush,
-      // Always the full treatment — never a lower-resolution approximation,
-      // whose breaks differ from the real result and so would MISLEAD. The
-      // preview is exactly the export.
-      stampOpts,
-    );
-  }, [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts]);
+      setCanvasAspectVars(canvas, w, h);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      drawRoots(
+        ctx,
+        drawDpr,
+        w,
+        h,
+        result,
+        safeColor(ink, INK),
+        safeColor(background, BG),
+        frame ? frame.progress : growth,
+        true,
+        brush,
+        // Always the full treatment — never an approximation, whose breaks
+        // differ from the real result and so would MISLEAD. Every frame of the
+        // play-in is exactly what the finished asset looks like at that point.
+        stampOpts,
+      );
+    },
+    [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts],
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -265,14 +276,27 @@ export default function RootBrush({
     let start = 0;
     const tick = (t: number) => {
       if (!start) start = t;
+      // Progress is read off the wall clock, not counted in frames, so the
+      // play-in takes GROWTH_MS however fast the machine draws — a slow
+      // machine drops frames instead of running the growth in slow motion.
       const p = Math.min(1, (t - start) / GROWTH_MS);
-      setGrowth(easeGrowth(p));
-      if (p < 1) raf = requestAnimationFrame(tick);
-      else setGrowing(false);
+      const eased = easeGrowth(p);
+      if (p >= 1) {
+        // Settle through state, which redraws at full quality.
+        setGrowth(1);
+        setGrowing(false);
+        return;
+      }
+      growthRef.current = eased;
+      // Drawn straight from the frame callback rather than through state: a
+      // render pass per frame would queue draws behind each other and the
+      // growth would run in bursts.
+      drawRef.current({ progress: eased });
+      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [growing]);
+  }, [growing, growthRef, setGrowth]);
 
   const toggleGrow = () => {
     if (growing) {
@@ -316,10 +340,14 @@ export default function RootBrush({
     recordTimeline,
   );
 
-  // The recorder replays the growth on its own fixed-step clock and stops
-  // itself at the end — the live animation stays out of the way so the two
-  // aren't both writing `growthRef`.
-  const startRecord = () => recorder.start();
+  // The recorder replays the growth from zero on its own fixed-step clock and
+  // stops itself at the end, saving the file — so recording IS the play-in, and
+  // the live rAF loop stands down rather than both writing `growthRef`.
+  const startRecord = () => {
+    setGrowing(false);
+    setGrowth(0);
+    recorder.start();
+  };
   const stopRecord = () => recorder.stop();
 
   const toggleFullscreen = () => {
@@ -395,10 +423,23 @@ export default function RootBrush({
       /* already released */
     }
   };
+  // While capturing, the encoded frames are painted offscreen at export size,
+  // so the preview would otherwise sit frozen for the whole capture. Mirror the
+  // capture's position — the recorder walks `growthRef` — with the cheap
+  // transient path, so the growth plays on screen as it records.
   useEffect(() => {
-    if (recorder.recording) return;
-    scheduleDraw();
-  }, [recorder.recording, scheduleDraw]);
+    if (!recorder.recording) {
+      scheduleDraw();
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      drawRef.current({ progress: growthRef.current });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [recorder.recording, scheduleDraw, growthRef]);
 
   const reset = () => {
     setGrowing(false);
