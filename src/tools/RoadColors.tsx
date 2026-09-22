@@ -21,6 +21,7 @@ import {
   drawStamped,
   stampActive,
   stampOptsForStroke,
+  TREATMENT_DPR,
   traceStampPathD,
   type StampOpts,
 } from "./stampTreatment";
@@ -41,7 +42,7 @@ import {
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 /** Fixed fill-in animation duration (seconds). */
-const FILL_IN_SEC = 3;
+const FILL_IN_SEC = 10;
 
 // Stable per-road key from its first coordinate, so the fade thins the same
 // roads whether drawn to canvas (ordered by reveal) or SVG (grouped by type).
@@ -153,6 +154,8 @@ export default function RoadColors({
   const abortRef = useRef<AbortController | null>(null);
   const dataRef = useRef<RoadData | null>(null);
   const roadsDrawnRef = useRef(0);
+  // Accumulating raw linework for the fill-in — see `animate`.
+  const rawRef = useRef<HTMLCanvasElement | null>(null);
   const [animating, setAnimating] = useState(false);
 
   const { w, h, exportDims, pxScale, config, setConfig } = useCanvasDimensions(
@@ -228,42 +231,24 @@ export default function RoadColors({
     [colorFor, strokeFor],
   );
 
-  // Paint the background across the whole frame.
-  const prepare = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      dpr: number,
-      background: string,
-      mapW: number,
-      mapH: number,
-    ) => {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (background !== "transparent") {
-        ctx.fillStyle = background;
-        ctx.fillRect(0, 0, mapW, mapH);
-      }
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-    },
-    [],
-  );
-
-  // Stroke the first `count` roads in PREVIEW coordinates onto `tctx`, whose
-  // transform the caller has already set. Shared by the direct draw and the
-  // stamp treatment's offscreen buffer.
+  // Stroke roads `from`…`count` in PREVIEW coordinates onto `tctx`, whose
+  // transform the caller has already set. Shared by the direct draw, the stamp
+  // treatment's offscreen buffer, and the fill-in — which passes a range so it
+  // only ever strokes the roads that are new this frame.
   const paintRoads = useCallback(
     (
       tctx: CanvasRenderingContext2D,
       d: RoadData,
       ordered: RoadWay[],
       count: number,
+      from = 0,
     ) => {
       tctx.lineCap = "round";
       tctx.lineJoin = "round";
       const proj = makeProjector(d.center, d.radius, w, h, view);
       const fieldFade = FADE ? makeFade(w, h, { seed: 7 }) : null;
       const n = Math.min(count, ordered.length);
-      for (let ri = 0; ri < n; ri++) {
+      for (let ri = from; ri < n; ri++) {
         const way = ordered[ri];
         drawWay(
           tctx,
@@ -299,6 +284,7 @@ export default function RoadColors({
       count: number,
       background: string,
       treatment: StampOpts | undefined,
+      preordered?: RoadWay[],
     ) => {
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
       ctx.clearRect(0, 0, w, h);
@@ -306,7 +292,9 @@ export default function RoadColors({
         ctx.fillStyle = background;
         ctx.fillRect(0, 0, w, h);
       }
-      const ordered = orderWays(d, keepWay);
+      // Ordering all ~14k ways costs a couple of milliseconds, which is worth
+      // hoisting out of a 60fps fill-in — it passes its order in.
+      const ordered = preordered ?? orderWays(d, keepWay);
       if (stampActive(treatment)) {
         drawStamped(ctx, scale, w, h, colorFor(), treatment, (tctx) =>
           paintRoads(tctx, d, ordered, count),
@@ -318,11 +306,21 @@ export default function RoadColors({
     [w, h, keepWay, colorFor, paintRoads],
   );
 
-  // Animate the network filling in. Cancels any prior run. Each frame appends
-  // to the canvas rather than repainting, so the fill-in stays cheap across
-  // tens of thousands of ways — which also means it can't run the stamp
-  // treatment (a whole-frame pass). The treated result is painted once at the
-  // end, when `animating` flips false.
+  // Animate the network filling in: the reveal walks the ways in order and
+  // every frame is composited THROUGH the treatment, so what you watch is the
+  // finished asset at that point in the fill-in.
+  //
+  // The linework accumulates in an offscreen buffer at the treatment's own
+  // resolution and each frame strokes only the roads that are NEW, then the
+  // whole buffer is treated and composited. Re-stroking every road each frame
+  // instead would make a frame cost grow with how much of the map is already
+  // down — fine at the start, ~38ms by the end on this snapshot, and far worse
+  // on a denser city than San Francisco. This way a frame costs the same at
+  // the end as at the beginning, whatever the map.
+  //
+  // It used to append straight to the visible canvas, which is just as cheap
+  // but draws raw linework — the treated ink only appeared once the animation
+  // settled, so the fill-in never looked like what it was building.
   const animate = useCallback(
     (d: RoadData) => {
       const canvas = canvasRef.current;
@@ -332,51 +330,82 @@ export default function RoadColors({
       setAnimating(true);
 
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
+      const pw = Math.round(w * dpr);
+      const ph = Math.round(h * dpr);
+      if (canvas.width !== pw) canvas.width = pw;
+      if (canvas.height !== ph) canvas.height = ph;
       setCanvasAspectVars(canvas, w, h);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
       const background = safeColor(bg, BG);
-      prepare(ctx, dpr, background, w, h);
-      const proj = makeProjector(d.center, d.radius, w, h, view);
       const ordered = orderWays(d, keepWay);
+      const total = ordered.length;
       roadsDrawnRef.current = 0;
 
-      const fieldFade = FADE ? makeFade(w, h, { seed: 7 }) : null;
-      const frames = Math.max(1, Math.round(FILL_IN_SEC * 60));
-      const perFrame = Math.max(1, Math.ceil(ordered.length / frames));
-      let i = 0;
-      const step = () => {
-        const end = Math.min(ordered.length, i + perFrame);
-        for (; i < end; i++) {
-          const way = ordered[i];
-          drawWay(
-            ctx,
-            proj,
-            way,
-            1,
-            fieldFade
-              ? {
-                  keep: (x, y) => fieldFade.keep(wayKey(way), x, y),
-                  alpha: (x, y) => fieldFade.alpha(wayKey(way), x, y),
-                  width: (x, y) => fieldFade.width(wayKey(way), x, y),
-                }
-              : null,
-          );
+      // Raw linework, at the resolution the treatment rasterizes at so it can
+      // be handed over 1:1 — scaling it would soften the strokes and the
+      // treatment would break them differently than the settled render does.
+      const raw = (rawRef.current ??= document.createElement("canvas"));
+      const rw = Math.max(1, Math.round(w * TREATMENT_DPR));
+      const rh = Math.max(1, Math.round(h * TREATMENT_DPR));
+      if (raw.width !== rw) raw.width = rw;
+      if (raw.height !== rh) raw.height = rh;
+      const rctx = raw.getContext("2d");
+      if (!rctx) return;
+      rctx.setTransform(1, 0, 0, 1, 0, 0);
+      rctx.clearRect(0, 0, rw, rh);
+      rctx.setTransform(TREATMENT_DPR, 0, 0, TREATMENT_DPR, 0, 0);
+
+      let drawn = 0;
+      let start = 0;
+      const step = (t: number) => {
+        if (!start) start = t;
+        // Wall clock, not a frame count: the fill-in takes the same time to
+        // play whatever frame rate the machine manages.
+        const p = Math.min(1, (t - start) / (FILL_IN_SEC * 1000));
+        // Linear, so roads arrive at a steady rate. An ease here would be
+        // wrong twice over: the ways are revealed smallest-tier first, so
+        // front-loading dumps the whole mass of minor streets in the opening
+        // seconds and leaves the tail with a handful of highways — and the
+        // recorder walks this same fill-in linearly, so the file would not
+        // match what the screen just showed.
+        const count = Math.round(p * total);
+        if (count > drawn) {
+          paintRoads(rctx, d, ordered, count, drawn);
+          drawn = count;
         }
-        roadsDrawnRef.current = i;
-        if (i < ordered.length) rafRef.current = requestAnimationFrame(step);
-        else {
+        roadsDrawnRef.current = count;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        if (background !== "transparent") {
+          ctx.fillStyle = background;
+          ctx.fillRect(0, 0, w, h);
+        }
+        if (stampActive(stampOpts)) {
+          drawStamped(ctx, dpr, w, h, colorFor(), stampOpts, (tctx) => {
+            // 1:1 device pixels — undo the treatment buffer's own transform.
+            tctx.save();
+            tctx.setTransform(1, 0, 0, 1, 0, 0);
+            tctx.drawImage(raw, 0, 0);
+            tctx.restore();
+          });
+        } else {
+          ctx.drawImage(raw, 0, 0, rw, rh, 0, 0, w, h);
+        }
+
+        if (p < 1) {
+          rafRef.current = requestAnimationFrame(step);
+        } else {
           rafRef.current = null;
-          roadsDrawnRef.current = ordered.length;
+          roadsDrawnRef.current = total;
           setAnimating(false);
         }
       };
-      step();
+      rafRef.current = requestAnimationFrame(step);
     },
-    [w, h, bg, prepare, drawWay, view, keepWay],
+    [w, h, bg, keepWay, paintRoads, colorFor, stampOpts],
   );
 
   // Instant, un-animated redraw — used for color / weight / background / size

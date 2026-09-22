@@ -3,8 +3,9 @@ import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
 import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
-import { easeGrowth, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
+import { useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { usePlayIn } from "../hooks/usePlayIn";
 import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -147,11 +148,11 @@ export default function RootBrush({
     [w, h],
   );
 
-  // A frame of the play-in overrides the settled growth value with its own
-  // `progress`; omitted (every settled draw) means progress-from-state. Either
-  // way the ink is the real treatment — see drawStamped.
+  // `progressOverride` is the play-in's own position; omitted (every settled
+  // draw) means progress-from-state. Either way the ink is the real treatment
+  // — see drawStamped.
   const draw = useCallback(
-    (frame?: { progress: number }) => {
+    (progressOverride?: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const cssDpr = window.devicePixelRatio || 1;
@@ -197,7 +198,7 @@ export default function RootBrush({
         result,
         safeColor(ink, INK),
         safeColor(background, BG),
-        frame ? frame.progress : growth,
+        progressOverride ?? growth,
         true,
         brush,
         // Always the full treatment — never an approximation, whose breaks
@@ -270,33 +271,7 @@ export default function RootBrush({
     return () => ro.disconnect();
   }, [isFullscreen, scheduleDraw]);
 
-  useEffect(() => {
-    if (!growing) return;
-    let raf = 0;
-    let start = 0;
-    const tick = (t: number) => {
-      if (!start) start = t;
-      // Progress is read off the wall clock, not counted in frames, so the
-      // play-in takes GROWTH_MS however fast the machine draws — a slow
-      // machine drops frames instead of running the growth in slow motion.
-      const p = Math.min(1, (t - start) / GROWTH_MS);
-      const eased = easeGrowth(p);
-      if (p >= 1) {
-        // Settle through state, which redraws at full quality.
-        setGrowth(1);
-        setGrowing(false);
-        return;
-      }
-      growthRef.current = eased;
-      // Drawn straight from the frame callback rather than through state: a
-      // render pass per frame would queue draws behind each other and the
-      // growth would run in bursts.
-      drawRef.current({ progress: eased });
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [growing, growthRef, setGrowth]);
+  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef);
 
   const toggleGrow = () => {
     if (growing) {
@@ -434,7 +409,7 @@ export default function RootBrush({
     }
     let raf = 0;
     const tick = () => {
-      drawRef.current({ progress: growthRef.current });
+      drawRef.current(growthRef.current);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

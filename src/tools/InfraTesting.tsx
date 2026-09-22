@@ -4,12 +4,12 @@ import ParamValueInput from "../components/ParamValueInput";
 import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
 import {
-  easeGrowth,
   useAnimProgress,
   useCanvasRecorder,
   useGrowthTimeline,
 } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
+import { usePlayIn } from "../hooks/usePlayIn";
 import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -30,7 +30,7 @@ import {
   type InfraTraceParams,
 } from "./infraTraceCore";
 
-const GROWTH_MS = 3200;
+const GROWTH_MS = 10000;
 
 interface InfraTestingProps {
   /** Portal tool controls into this host (mode-rail panel under the vertical seg). */
@@ -81,12 +81,18 @@ export default function InfraTesting({
     [params.stamp, params.cutout, params.lineWidth],
   );
 
-  const draw = useCallback(() => {
+  // `progressOverride` is the play-in's own position; omitted (every settled
+  // draw) means progress-from-state.
+  const draw = useCallback((progressOverride?: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
+    // Assigning width/height reallocates and clears the backing store, so only
+    // do it when the size actually changed — this runs on every play-in frame.
+    const pw = Math.round(w * dpr);
+    const ph = Math.round(h * dpr);
+    if (canvas.width !== pw) canvas.width = pw;
+    if (canvas.height !== ph) canvas.height = ph;
     setCanvasAspectVars(canvas, w, h);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -99,7 +105,7 @@ export default function InfraTesting({
       params as unknown as JaggedParams,
       safeColor(ink, INK),
       safeColor(background, BG),
-      growth,
+      progressOverride ?? growth,
       fade,
       params.seed,
       stampOpts,
@@ -110,20 +116,13 @@ export default function InfraTesting({
     draw();
   }, [draw]);
 
+  // The play-in paints through this rather than through state — see usePlayIn.
+  const drawRef = useRef(draw);
   useEffect(() => {
-    if (!growing) return;
-    let raf = 0;
-    let start = 0;
-    const tick = (t: number) => {
-      if (!start) start = t;
-      const p = Math.min(1, (t - start) / GROWTH_MS);
-      setGrowth(easeGrowth(p));
-      if (p < 1) raf = requestAnimationFrame(tick);
-      else setGrowing(false);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [growing]);
+    drawRef.current = draw;
+  });
+
+  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef);
 
   const toggleGrow = () => {
     if (growing) {

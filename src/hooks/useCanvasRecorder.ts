@@ -32,13 +32,17 @@ const AVC_CODECS = [
   "avc1.42E01E", // Baseline @ L3.0 (fallback)
 ];
 
-const BITRATES = [40_000_000, 20_000_000, 8_000_000, 4_000_000];
+// Bits per pixel per second to aim for. Flat vector ink is mostly hard edges,
+// which is exactly what a codec spends bits on, so this sits well above what
+// the same resolution would need for camera footage.
+const TARGET_BPP = 0.35;
+// Floor and ceiling on the computed rate: the floor keeps small canvases from
+// being handed a stingy budget, and the ceiling stays inside what encoders
+// will accept. Candidates below are tried in turn if the encoder refuses.
+const MIN_BITRATE = 40_000_000;
+const MAX_BITRATE = 120_000_000;
+const BITRATE_FALLBACKS = [20_000_000, 8_000_000, 4_000_000];
 const DEFAULT_FPS = 60;
-// Every captured frame is redrawn at export resolution, which costs far more
-// than realtime — a 3s play-in takes ~45s to capture. Past this length, halve
-// the frame rate rather than make the wait proportional; the long play-ins are
-// also the slowest-moving ones, where 30fps is indistinguishable.
-const LONG_ANIMATION_MS = 6000;
 // Force a keyframe ~every 2s so seeking/scrubbing stays responsive.
 const KEYFRAME_SECONDS = 2;
 // Don't feed the encoder faster than it can emit — avoids flush() hanging on stop.
@@ -96,11 +100,24 @@ function even(n: number): number {
   return Math.max(2, Math.floor(n / 2) * 2);
 }
 
+/**
+ * Bitrate candidates for a frame size and rate, best first. Scaling with the
+ * pixel RATE rather than using one fixed ladder matters at both ends: a 4K
+ * 60fps capture has eight times the pixels of a 1080p one and was being handed
+ * the same budget, which is where soft, mushy edges came from.
+ */
+function bitrateCandidates(width: number, height: number, fps: number): number[] {
+  const target = Math.round(width * height * fps * TARGET_BPP);
+  const best = Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, target));
+  return [best, ...BITRATE_FALLBACKS.filter((b) => b < best)];
+}
+
 async function pickCodec(
   width: number,
   height: number,
+  fps: number,
 ): Promise<{ codec: string; bitrate: number } | null> {
-  for (const bitrate of BITRATES) {
+  for (const bitrate of bitrateCandidates(width, height, fps)) {
     for (const codec of AVC_CODECS) {
       try {
         const { supported } = await VideoEncoder.isConfigSupported({
@@ -108,6 +125,9 @@ async function pickCodec(
           width,
           height,
           bitrate,
+          // Probe at the rate we will actually encode at — the level limits
+          // are on pixels per second, not on frame size alone.
+          framerate: fps,
         });
         if (supported) return { codec, bitrate };
       } catch {
@@ -131,7 +151,13 @@ export function useGrowthTimeline(
   return useCallback(
     () => ({
       durationMs,
-      fps: durationMs > LONG_ANIMATION_MS ? 30 : DEFAULT_FPS,
+      // Full frame rate whatever the length. This used to halve to 30fps past
+      // six seconds, because every captured frame is redrawn at export
+      // resolution and the ink treatment made that cost ~330ms a frame, so a
+      // long capture took minutes. The treatment now runs on the GPU and a
+      // whole capture finishes in seconds, so there is nothing left to buy by
+      // throwing away half the frames.
+      fps: DEFAULT_FPS,
       seek: (t: number) => {
         growthRef.current = easeGrowth(t);
       },
@@ -292,7 +318,7 @@ export function useCanvasRecorder(
     setProgress(0);
 
     void (async () => {
-      const picked = await pickCodec(width, height);
+      const picked = await pickCodec(width, height, fps);
       // stop() may have fired while we were probing — bail without a download.
       if (!activeRef.current) return;
       if (!picked) {
@@ -317,16 +343,20 @@ export function useCanvasRecorder(
           void stop();
         },
       });
-      // realtime: emit each frame promptly (1-in-1-out). The default "quality"
-      // mode buffers frames and stalls a live rAF canvas pipeline — output never
-      // fires, so the muxer finalizes with no codec config.
+      // "quality" lets the encoder buffer and look ahead, which is where the
+      // better rate control — and so the cleaner edges — comes from. It is only
+      // safe when WE drive the clock: a fixed-step capture waits on the encode
+      // queue between frames and flushes on stop, so buffering is fine. On a
+      // live canvas there is nothing throttling the producer, the encoder
+      // stalls, output never fires, and the muxer finalizes with no codec
+      // config — so that path stays 1-in-1-out.
       encoder.configure({
         codec,
         width,
         height,
         bitrate,
         framerate: fps,
-        latencyMode: "realtime",
+        latencyMode: timeline ? "quality" : "realtime",
       });
 
       muxerRef.current = muxer;

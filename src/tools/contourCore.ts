@@ -463,13 +463,27 @@ function paintContourLines(
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   const fieldFade = fade ? makeFade(w, h, { seed: fadeSeed, ...CONTOUR_FADE }) : null;
+  // Fraction of the timeline spent staggering when rings *start* drawing; the
+  // remainder is each ring's own draw-out time. Matches the rest of the family
+  // (see flowFieldCore / networkCore) — a ring used to appear whole the instant
+  // the clock passed its order, so the play-in read as a slideshow of rings
+  // switching on rather than contours being traced.
+  const SPREAD = 0.6;
+  const denom = 1 - SPREAD;
   let lineId = 0;
   for (const line of result.lines) {
-    if (line.order > progress) {
-      lineId++;
-      continue;
-    }
     const id = lineId++;
+    // Local 0..1 progress for this ring.
+    const local =
+      progress >= 1
+        ? 1
+        : denom <= 0
+          ? progress > line.order
+            ? 1
+            : 0
+          : (progress - line.order * SPREAD) / denom;
+    if (local <= 0) continue;
+    const t = local >= 1 ? 1 : local;
     const fadeOpts = fieldFade
       ? {
           keep: (x: number, y: number) => fieldFade.keep(id, x, y),
@@ -479,16 +493,33 @@ function paintContourLines(
       : null;
     const pts = line.pts;
     if (pts.length < 6) continue;
-    if (
-      pts[0] !== pts[pts.length - 2] ||
-      pts[1] !== pts[pts.length - 1]
-    ) {
-      const closed = pts.slice();
+    // A ring is a closed loop, so the last point is the first one.
+    let closed = pts;
+    if (pts[0] !== pts[pts.length - 2] || pts[1] !== pts[pts.length - 1]) {
+      closed = pts.slice();
       closed.push(pts[0], pts[1]);
-      strokeFaded(ctx, closed, line.w, fadeOpts);
-    } else {
-      strokeFaded(ctx, pts, line.w, fadeOpts);
     }
+    if (t >= 1) {
+      strokeFaded(ctx, closed, line.w, fadeOpts);
+      continue;
+    }
+    // Trace the ring point-by-point, so it draws round rather than appearing.
+    const segs = closed.length / 2 - 1;
+    if (segs < 1) continue;
+    const grown = segs * t;
+    const full = Math.floor(grown);
+    const frac = grown - full;
+    const draw: number[] = [closed[0], closed[1]];
+    const last = Math.min(full, segs);
+    for (let i = 1; i <= last; i++) draw.push(closed[i * 2], closed[i * 2 + 1]);
+    if (frac > 0 && full < segs) {
+      const ax = closed[full * 2];
+      const ay = closed[full * 2 + 1];
+      const bx = closed[(full + 1) * 2];
+      const by = closed[(full + 1) * 2 + 1];
+      draw.push(ax + (bx - ax) * frac, ay + (by - ay) * frac);
+    }
+    strokeFaded(ctx, draw, line.w, fadeOpts);
   }
 }
 
