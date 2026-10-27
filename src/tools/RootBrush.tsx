@@ -12,6 +12,7 @@ import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
 import {
   BG,
+  buildAvoidDistance,
   buildRootsSVG,
   DEFAULT_ROOT,
   drawRoots,
@@ -24,9 +25,65 @@ import {
   RW,
   sampleLuminance,
   SLIDER_KEYS_SIMPLE,
+  type AvoidMask,
   type RootBrush as Brush,
   type RootParams,
 } from "./rootSystemCore";
+
+// ---- guide image -----------------------------------------------------------
+// An uploaded image the roots grow AROUND. It only steers the growth: by
+// default it's shown faded in the preview and left out of every export.
+
+interface GuideImage {
+  el: HTMLImageElement;
+  href: string; // data URL (embedded in SVG only when "include" is on)
+  iw: number;
+  ih: number;
+  name: string;
+}
+
+/** Placement as fractions of the canvas, so it survives aspect-ratio changes. */
+interface GuidePlace {
+  x: number; // centre x, 0..1 of width
+  y: number; // centre y, 0..1 of height
+  size: number; // image height, fraction of canvas height
+  clearance: number; // px gap kept between roots and the image
+}
+
+const DEFAULT_PLACE: GuidePlace = { x: 0.5, y: 0.6, size: 0.35, clearance: 8 };
+const PLACE_RANGES: Record<keyof GuidePlace, [number, number, number]> = {
+  size: [0.05, 1.2, 0.01],
+  x: [0, 1, 0.01],
+  y: [0, 1, 0.01],
+  clearance: [0, 80, 1],
+};
+const PLACE_LABELS: Record<keyof GuidePlace, string> = {
+  size: "Image Size",
+  x: "Image X",
+  y: "Image Y",
+  clearance: "Clearance",
+};
+const PLACE_HINTS: Record<keyof GuidePlace, string> = {
+  size: "Scale of the image on the canvas. You can also drag the canvas to move it.",
+  x: "Horizontal position of the image. Drag the canvas to move it freely.",
+  y: "Vertical position of the image. Drag the canvas to move it freely.",
+  clearance: "Gap the roots keep from the image. 0 lets them touch its edge.",
+};
+const GHOST_OPACITY = 0.3;
+
+function guideRect(g: GuideImage, pl: GuidePlace, w: number, h: number) {
+  const dh = pl.size * h;
+  const dw = dh * (g.iw / (g.ih || 1));
+  return { dx: pl.x * w - dw / 2, dy: pl.y * h - dh / 2, dw, dh };
+}
+
+const readAsDataURL = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
 
 const GROWTH_MS = 10000;
 const ZOOM_MIN = 0.5;
@@ -101,6 +158,33 @@ export default function RootBrush({
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
 
+  // Guide image. `placeLive` follows drags/sliders instantly (the faded
+  // preview moves with you); `place` is the settled copy the roots grow from,
+  // committed shortly after you stop adjusting — the same scrub pattern as the
+  // other sliders, so regrowth never stutters a drag.
+  const [guide, setGuide] = useState<GuideImage | null>(null);
+  const [placeLive, setPlaceLive] = useState<GuidePlace>(DEFAULT_PLACE);
+  const [place, setPlace] = useState<GuidePlace>(DEFAULT_PLACE);
+  const [includeGuide, setIncludeGuide] = useState(false);
+  const guideDragRef = useRef<{ x: number; y: number } | null>(null);
+  const [guideDragging, setGuideDragging] = useState(false);
+  useEffect(() => {
+    if (guideDragging) return;
+    const t = window.setTimeout(() => setPlace(placeLive), 180);
+    return () => window.clearTimeout(t);
+  }, [placeLive, guideDragging]);
+  const updatePlace = (k: keyof GuidePlace, v: number) =>
+    setPlaceLive((prev) => ({ ...prev, [k]: v }));
+
+  const avoid = useMemo<AvoidMask | null>(() => {
+    if (!guide) return null;
+    const r = guideRect(guide, place, w, h);
+    const dist = buildAvoidDistance(w, h, (ctx) =>
+      ctx.drawImage(guide.el, r.dx, r.dy, r.dw, r.dh),
+    );
+    return { dist, w, h, clearance: place.clearance };
+  }, [guide, place, w, h]);
+
   const buf = useMemo(
     () => (image ? sampleLuminance(image, w, h) : null),
     [image, w, h],
@@ -109,13 +193,14 @@ export default function RootBrush({
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
   // re-run the (expensive) growth engine, so they're excluded from the deps.
   const result = useMemo(
-    () => growRoots(w, h, params, buf, brush),
+    () => growRoots(w, h, params, buf, brush, avoid),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       w,
       h,
       buf,
       brush,
+      avoid,
       ...Object.entries(params)
         .filter(([k]) => k !== "stamp" && k !== "cutout")
         .map(([, v]) => v),
@@ -136,6 +221,25 @@ export default function RootBrush({
           }
         : undefined,
     [brush, params.stamp, params.cutout, params.thickness],
+  );
+
+  // Paint the guide image over the roots in preview-space coords at `scale`.
+  const paintGuide = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      scale: number,
+      pl: GuidePlace,
+      alpha: number,
+    ) => {
+      if (!guide || alpha <= 0) return;
+      const r = guideRect(guide, pl, w, h);
+      ctx.save();
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(guide.el, r.dx, r.dy, r.dw, r.dh);
+      ctx.restore();
+    },
+    [guide, w, h],
   );
 
   const clampPan = useCallback(
@@ -206,8 +310,10 @@ export default function RootBrush({
         // play-in is exactly what the finished asset looks like at that point.
         stampOpts,
       );
+      // Guide image: full strength if it'll be exported, faded if not.
+      paintGuide(ctx, drawDpr, placeLive, includeGuide ? 1 : GHOST_OPACITY);
     },
-    [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts],
+    [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts, paintGuide, placeLive, includeGuide],
   );
 
   useEffect(() => {
@@ -302,9 +408,10 @@ export default function RootBrush({
           brush,
           stampOpts,
         );
+        if (includeGuide) paintGuide(ctx, dpr * pxScale, place, 1);
       },
     }),
-    [exportDims, w, h, pxScale, result, ink, background, growthRef, brush, stampOpts],
+    [exportDims, w, h, pxScale, result, ink, background, growthRef, brush, stampOpts, includeGuide, paintGuide, place],
   );
 
   const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
@@ -371,7 +478,21 @@ export default function RootBrush({
     setPan({ x: 0, y: 0 });
   };
 
+  const canvasPoint = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    };
+  };
+
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (guide && !isFullscreen && !growing && !recorder.recording && e.button === 0) {
+      guideDragRef.current = canvasPoint(e);
+      setGuideDragging(true);
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      return;
+    }
     if (!isFullscreen || zoom === 1) return;
     if (e.button !== 0) return;
     dragRef.current = { x: e.clientX, y: e.clientY };
@@ -380,6 +501,17 @@ export default function RootBrush({
   };
 
   const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const g = guideDragRef.current;
+    if (g) {
+      const pt = canvasPoint(e);
+      guideDragRef.current = pt;
+      setPlaceLive((prev) => ({
+        ...prev,
+        x: clamp(prev.x + (pt.x - g.x), 0, 1),
+        y: clamp(prev.y + (pt.y - g.y), 0, 1),
+      }));
+      return;
+    }
     const d = dragRef.current;
     if (!d || !isFullscreen) return;
     const dx = e.clientX - d.x;
@@ -389,6 +521,16 @@ export default function RootBrush({
   };
 
   const onCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (guideDragRef.current) {
+      guideDragRef.current = null;
+      setGuideDragging(false); // commits the new position → roots regrow
+      try {
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* already released */
+      }
+      return;
+    }
     if (!dragRef.current) return;
     dragRef.current = null;
     setPanning(false);
@@ -416,6 +558,34 @@ export default function RootBrush({
     return () => cancelAnimationFrame(raf);
   }, [recorder.recording, scheduleDraw, growthRef]);
 
+  const onGuideFile = async (file: File) => {
+    try {
+      const href = await readAsDataURL(file);
+      const img = new Image();
+      img.onload = () => {
+        setGuide({
+          el: img,
+          href,
+          iw: img.naturalWidth || 300,
+          ih: img.naturalHeight || 300,
+          name: file.name,
+        });
+        setIncludeGuide(false);
+      };
+      img.onerror = () => console.error("Image load failed");
+      img.src = href;
+    } catch (err) {
+      console.error("Image read failed", err);
+    }
+  };
+
+  function clearGuide() {
+    setGuide(null);
+    setPlaceLive(DEFAULT_PLACE);
+    setPlace(DEFAULT_PLACE);
+    setIncludeGuide(false);
+  }
+
   const reset = () => {
     setGrowing(false);
     setGrowth(1);
@@ -424,6 +594,7 @@ export default function RootBrush({
     setInk(INK);
     setBackground(BG);
     setImage(null);
+    clearGuide();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -451,7 +622,16 @@ export default function RootBrush({
       brush,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    let out = svg;
+    if (guide && includeGuide) {
+      const r = guideRect(guide, place, w, h);
+      const f = (n: number) => Math.round(n * 100) / 100;
+      out = svg.replace(
+        /<\/svg>$/,
+        `<image href="${guide.href}" x="${f(r.dx)}" y="${f(r.dy)}" width="${f(r.dw)}" height="${f(r.dh)}" preserveAspectRatio="none"/></svg>`,
+      );
+    }
+    download(new Blob([out], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -475,6 +655,7 @@ export default function RootBrush({
         brush,
         stampOpts,
       );
+      if (includeGuide) paintGuide(ctx, scale, place, 1);
     }, ss).then((blob) => blob && download(blob, "png"));
   };
 
@@ -534,9 +715,98 @@ export default function RootBrush({
     </div>
   ) : null;
 
+  const renderPlaceRow = (key: keyof GuidePlace) => {
+    const [min, max, step] = PLACE_RANGES[key];
+    return (
+      <label key={key} className="tool-param-row has-tip" data-tip={PLACE_HINTS[key]}>
+        <span className="tool-param-row__header">
+          <span className="tool-param-row__label">{PLACE_LABELS[key]}</span>
+          <ParamValueInput
+            value={+placeLive[key].toFixed(step < 1 ? 2 : 0)}
+            min={min}
+            max={max}
+            step={step}
+            aria-label={PLACE_LABELS[key]}
+            onChange={(v) => updatePlace(key, v)}
+          />
+        </span>
+        <ParamRangeTrack
+          value={placeLive[key]}
+          min={min}
+          max={max}
+          step={step}
+          aria-label={PLACE_LABELS[key]}
+          onChange={(v) => updatePlace(key, v)}
+        />
+      </label>
+    );
+  };
+
+  const imageGroup = (
+    <div className="specimen-tree__group">
+      <span className="specimen-tree__group-title">Grow Around Image</span>
+      <div className="tool-uploads">
+        <label className="btn tool-upload-btn">
+          {guide ? "Change image" : "Upload image"}
+          <input
+            type="file"
+            accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void onGuideFile(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        {guide && (
+          <button type="button" className="tool-upload-chip" onClick={clearGuide}>
+            <span className="tool-upload-chip__name">{guide.name}</span>
+            <span aria-hidden="true">✕</span>
+          </button>
+        )}
+      </div>
+      {guide && (
+        <>
+          <div className="specimen-tree__sliders">
+            {(["size", "x", "y", "clearance"] as (keyof GuidePlace)[]).map(renderPlaceRow)}
+          </div>
+          <label
+            className="tool-param-row has-tip"
+            data-tip="Off: the image only guides the growth and is left out of PNG, SVG and MP4 exports (shown faded here)."
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <span className="tool-param-row__label">Include image in export</span>
+            <span className={`toggle-switch${includeGuide ? " is-on" : ""}`}>
+              <input
+                type="checkbox"
+                checked={includeGuide}
+                onChange={(e) => setIncludeGuide(e.target.checked)}
+                style={{ position: "absolute", opacity: 0, inset: 0, cursor: "pointer" }}
+                aria-label="Include image in export"
+              />
+              <span className="toggle-switch__track" />
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </>
+      )}
+    </div>
+  );
+
   const controls = (
     <ToolRailControls
-      header={brushHeader}
+      header={
+        <>
+          {brushHeader}
+          {imageGroup}
+        </>
+      }
       config={config}
       onConfigChange={setConfig}
       sliders={SLIDER_KEYS_SIMPLE.map(renderRow)}
@@ -588,6 +858,11 @@ export default function RootBrush({
           <canvas
             ref={canvasRef}
             className={`specimen-tree__canvas${isFullscreen && zoom !== 1 ? " is-pannable" : ""}${panning ? " is-panning" : ""}`}
+            style={
+              guide && !isFullscreen
+                ? { cursor: guideDragging ? "grabbing" : "grab", touchAction: "none" }
+                : undefined
+            }
             onPointerDown={onCanvasPointerDown}
             onPointerMove={onCanvasPointerMove}
             onPointerUp={onCanvasPointerUp}
