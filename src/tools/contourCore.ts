@@ -15,7 +15,7 @@ export const CW = 680;
 export const CH = 580;
 // Reversed out — cream linework on mid green.
 export const INK = "#195519"; // Mid green
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 // Lighter dissolve than the shared default — a topo sheet should stay mostly
 // inked with only a narrow taper right at the edge, not thin out over the

@@ -14,7 +14,7 @@ import type { RootEdge, RootTier } from "./rootSystemCore";
 export const TW = 900;
 export const TH = 560;
 // Light ground, dark linework — black-on-white per the studio's viz aesthetic.
-export const INK = "#00280F";
+export const INK = "#0F3214"; // Text green
 export const BG = "#EBFADC";
 
 // A brush sets how a growing tip TURNS and how the roots are DRAWN — the same

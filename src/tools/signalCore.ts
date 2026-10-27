@@ -12,7 +12,7 @@ import {
 export const SW = 680;
 export const SH = 580;
 export const INK = "#195519"; // Mid green
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 export interface SignalParams {
   seed: number;

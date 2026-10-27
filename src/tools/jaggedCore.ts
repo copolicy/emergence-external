@@ -98,7 +98,7 @@ export const JH = FH;
 // Own colours rather than the flow field's — Infrastructure reverses out to
 // cream on mid green while Healthcare's field moved to gold on cream.
 export const INK = "#195519"; // Mid green
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 export interface JaggedParams extends FlowParams {
   bundles: number; // how many trace bundles to route

@@ -81,7 +81,7 @@ function viewFor(p: Placement, w: number, h: number): View {
 
 // Automotive vertical defaults — gold street grid on cream, matching the
 // Vertical 04 reference card.
-const BG = "#F5F5F2";
+const BG = "#F8F5EC";
 
 // Pre-fetched SF / Bay Area roads, loaded by default so no Overpass call is
 // needed for the usual view. Generated into public/ as a static asset.

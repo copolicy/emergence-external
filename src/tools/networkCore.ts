@@ -19,7 +19,7 @@ import {
 export const NW = 680;
 export const NH = 580;
 export const INK = "#C0B663"; // Gold
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 export interface NetworkParams {
   seed: number;

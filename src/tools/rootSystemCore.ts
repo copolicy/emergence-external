@@ -15,10 +15,10 @@ export type { StampOpts } from "./stampTreatment";
 // the landscape circulation of Vascular.
 export const RW = 640;
 export const RH = 700;
-// Default palette: deep forest linework on cream, the same ground the field
+// Default palette: text-green linework on cream, the same ground the field
 // generators reversed out to.
-export const INK = "#00280F";
-export const BG = "#F5F5F2"; // Cream
+export const INK = "#0F3214"; // Text green
+export const BG = "#F8F5EC"; // Cream
 
 /**
  * Root system. A descendant of the Vascular space-colonization engine, inverted

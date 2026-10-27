@@ -9,7 +9,7 @@ import { DEFAULT_JAGGED, type JaggedParams } from "./jaggedCore";
 export const IW = FW;
 export const IH = FH;
 export const INK = "#195519"; // Mid green
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 /** Seed that places the traced reference board exactly (cover-fit). */
 export const INFRA_REFERENCE_SEED = 1;

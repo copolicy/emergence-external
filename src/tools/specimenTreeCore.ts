@@ -1,6 +1,6 @@
 export const W = 680;
 export const H = 580;
-export const INK = "#00280F";
+export const INK = "#0F3214"; // Text green
 export const DEFAULT_FOLIAGE_COLOR = "#509137";
 
 export interface TreeParams {

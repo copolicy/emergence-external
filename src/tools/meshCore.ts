@@ -14,7 +14,7 @@ import {
 export const MW = 680;
 export const MH = 580;
 export const INK = "#C0B663"; // Gold — matches FinTech vertical card
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 export interface MeshParams {
   seed: number;

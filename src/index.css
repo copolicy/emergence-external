@@ -91,7 +91,7 @@ button {
 
 .app-header__back:hover {
   background: var(--accent-soft);
-  border-color: rgba(0, 102, 206, 0.25);
+  border-color: rgba(15, 50, 20, 0.25);
   color: var(--accent);
 }
 
@@ -120,7 +120,7 @@ button {
 
 .app-back:hover {
   background: var(--accent-soft);
-  border-color: rgba(0, 102, 206, 0.25);
+  border-color: rgba(15, 50, 20, 0.25);
   color: var(--accent);
 }
 
@@ -389,7 +389,7 @@ button {
 
 .seg__opt--active {
   color: var(--c-white);
-  background: var(--c-dark-green);
+  background: var(--c-text-green);
 }
 
 .seg__opt--active:hover {
@@ -397,7 +397,7 @@ button {
   background: var(--c-mid-green);
 }
 
-/* Nested vertical / field toggles — gold instead of dark green. */
+/* Nested vertical / field toggles — gold instead of text green. */
 .seg--alt .seg__opt {
   font-weight: 400;
   text-transform: none;
@@ -607,7 +607,7 @@ button {
 
 .tool-card:not(.tool-card--disabled):hover {
   transform: translateY(-2px);
-  border-color: rgba(0, 102, 206, 0.3);
+  border-color: rgba(15, 50, 20, 0.3);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
 }
 
@@ -622,7 +622,7 @@ button {
   border-radius: var(--border-radius-md);
   overflow: hidden;
   margin-bottom: 16px;
-  background: var(--c-cream, #f5f5f2);
+  background: var(--c-cream, #f8f5ec);
   border: 1px solid var(--border);
 }
 
@@ -1087,7 +1087,7 @@ button {
   padding: 5px 6px;
   border: 1px solid var(--border);
   border-radius: var(--border-radius-sm, 4px);
-  background: var(--c-cream, #f5f5f2);
+  background: var(--c-cream, #f8f5ec);
   color: var(--ink);
   font-family: var(--font-subhead);
   font-size: 0.75rem;
@@ -1208,7 +1208,7 @@ button {
 
 .tool-param-row__value:focus {
   outline: none;
-  border-color: var(--copo-blue, #3a6ea5);
+  border-color: var(--copo-blue, #195519);
   background: var(--paper, #fff);
   color: var(--ink);
 }
@@ -1826,7 +1826,7 @@ button {
   height: 100vh;
   overflow: hidden;
   /* Letterbox colour is set inline from the artwork background in React. */
-  background: #0e0f0d;
+  background: #000000;
 }
 
 /* Centered in the flex wrapper; pixel size is set from JS to match the viewport. */
@@ -1902,7 +1902,7 @@ button {
   position: relative;
   overflow: hidden;
   cursor: grab;
-  background: #f4f1ea;
+  background: #f8f5ec;
 }
 
 .specimen-tree__canvas--paper:active {
@@ -2033,7 +2033,7 @@ button {
 }
 
 .logo-simulator__preset:hover {
-  border-color: rgba(0, 102, 206, 0.25);
+  border-color: rgba(15, 50, 20, 0.25);
 }
 
 .logo-simulator__preset--active {

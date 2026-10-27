@@ -11,7 +11,7 @@ import {
 export const FW = 680;
 export const FH = 580;
 export const INK = "#C0B663"; // Gold — matches Healthcare vertical card
-export const BG = "#F5F5F2"; // Cream
+export const BG = "#F8F5EC"; // Cream
 
 const TAU = Math.PI * 2;
 

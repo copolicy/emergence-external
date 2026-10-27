@@ -1,10 +1,11 @@
 /*
  * Emergence / COPO brand tokens
- * Palette: White · Cream · Gold · Greens · Browns · Grays · Black
+ * Palette: White · Cream · Light Gold · Gold · Greens · Browns · Grays · Black
  *
- * Gold is the highlight fill (segmented controls, switches) with dark ink on top.
- * Dark green is the primary interactive / tool stroke accent.
+ * Gold is the highlight fill (segmented controls, switches) with text green on top.
+ * Text green is the primary interactive / tool stroke accent.
  * Cream is the page ground; pale green is the generative canvas default.
+ * Dark green and dark brown are print-only (CMYK, no screen hex) and are not used.
  *
  * Typography:
  *   - Helvetica Neue — display, UI, and body
@@ -13,25 +14,24 @@
 :root {
   /* ── Named palette ─────────────────────────────────────────── */
   --c-white: #ffffff;
-  --c-cream: #f5f5f2;
+  --c-cream: #f8f5ec;
+  --c-light-gold: #e5da8e;
   --c-gold: #c0b663;
-  --c-dark-green: #00280f;
-  --c-text-green: #083508;
+  --c-text-green: #0f3214;
   --c-mid-green: #195519;
   --c-light-green: #509137;
   --c-pale-green: #ebfadc;
-  --c-dark-brown: #281d07;
-  --c-text-brown: #381e0d;
+  --c-text-brown: #371e14;
   --c-mid-brown: #513727;
   --c-light-brown: #8a6b4b;
-  --c-pale-brown: #f6e9de;
+  --c-pale-brown: #fcebd7;
   --c-light-gray: #a6a6a6;
   --c-dark-gray: #595959;
   --c-black: #000000;
 
   /* ── Hero (highlight fill) ─────────────────────────────────── */
   --hero: var(--c-gold);
-  --hero-ink: var(--c-dark-green);
+  --hero-ink: var(--c-text-green);
   --hero-soft: rgba(192, 182, 99, 0.22);
   --hero-tint: var(--c-pale-green);
 
@@ -41,10 +41,10 @@
   --ink: var(--c-black);
   --ink-muted: rgba(0, 0, 0, 0.55);
 
-  /* Interactive accent — dark green, legible on cream/white. */
-  --accent: var(--c-dark-green);
+  /* Interactive accent — text green, legible on cream/white. */
+  --accent: var(--c-text-green);
   --accent-hover: var(--c-mid-green);
-  --accent-soft: rgba(0, 40, 15, 0.1);
+  --accent-soft: rgba(15, 50, 20, 0.1);
 
   /* Organic / supporting greens */
   --nature: var(--c-mid-green);
@@ -58,7 +58,7 @@
   --copo-black: var(--c-black);
   --copo-blue: var(--c-mid-green);
   --copo-blue-bright: var(--c-light-green);
-  --copo-evergreen: var(--c-dark-green);
+  --copo-evergreen: var(--c-text-green);
   --copo-earth-red: var(--c-gold);
 
   /* ── Typography ────────────────────────────────────────────── */
