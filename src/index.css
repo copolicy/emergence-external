@@ -2420,3 +2420,43 @@ button {
   object-fit: cover;
   display: block;
 }
+
+/* Upload buttons + file chips (Around Image / Roots + Text). */
+.tool-uploads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-upload-btn {
+  cursor: pointer;
+}
+
+.tool-upload-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.tool-upload-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.tool-upload-note {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  opacity: 0.7;
+}

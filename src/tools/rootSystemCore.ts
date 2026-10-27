@@ -338,6 +338,88 @@ function imageAttractors(
   return { x, y };
 }
 
+// ---- avoid mask ------------------------------------------------------------
+// An optional area the roots grow AROUND (e.g. an uploaded image). `dist` is a
+// per-pixel distance (px, in the w×h growth space) to the nearest masked pixel;
+// growth never steps within `clearance` of it, so roots part around the shape
+// and leave it as clean negative space.
+export interface AvoidMask {
+  dist: Float32Array;
+  w: number;
+  h: number;
+  clearance: number;
+}
+
+// 1-D squared Euclidean distance transform (Felzenszwalb & Huttenlocher).
+function edt1d(f: Float64Array, n: number, out: Float64Array) {
+  const v = new Int32Array(n);
+  const z = new Float64Array(n + 1);
+  let k = 0;
+  v[0] = 0;
+  z[0] = -Infinity;
+  z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    while (s <= z[k]) {
+      k--;
+      s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    const d = q - v[k];
+    out[q] = d * d + f[v[k]];
+  }
+}
+
+/**
+ * Build a distance field from whatever `paint` draws: any pixel with alpha
+ * above ~15% counts as the shape (a photo = its rectangle, a transparent PNG
+ * or SVG = its silhouette).
+ */
+export function buildAvoidDistance(
+  w: number,
+  h: number,
+  paint: (ctx: CanvasRenderingContext2D) => void,
+): Float32Array {
+  const out = new Float32Array(w * h).fill(1e6);
+  const off = document.createElement("canvas");
+  off.width = w;
+  off.height = h;
+  const ctx = off.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return out;
+  paint(ctx);
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, w, h).data;
+  } catch {
+    return out;
+  }
+  const INF = 1e12;
+  const f = new Float64Array(w * h);
+  for (let i = 0; i < w * h; i++) f[i] = data[i * 4 + 3] > 40 ? 0 : INF;
+  const col = new Float64Array(h);
+  const colOut = new Float64Array(h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) col[y] = f[y * w + x];
+    edt1d(col, h, colOut);
+    for (let y = 0; y < h; y++) f[y * w + x] = colOut[y];
+  }
+  const row = new Float64Array(w);
+  const rowOut = new Float64Array(w);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) row[x] = f[y * w + x];
+    edt1d(row, w, rowOut);
+    for (let x = 0; x < w; x++) out[y * w + x] = Math.sqrt(rowOut[x]);
+  }
+  return out;
+}
+
 // ---- growth ----------------------------------------------------------------
 
 export function growRoots(
@@ -346,8 +428,16 @@ export function growRoots(
   p: RootParams,
   buf?: LumBuffer | null,
   brush: RootBrush = "organic",
+  avoid?: AvoidMask | null,
 ): RootResult {
   const rng = mulberry32(p.seed);
+  // True where a point is inside the avoid shape (plus its clearance band).
+  const blocked = (x: number, y: number) => {
+    if (!avoid) return false;
+    const ix = x < 0 ? 0 : x >= avoid.w ? avoid.w - 1 : x | 0;
+    const iy = y < 0 ? 0 : y >= avoid.h ? avoid.h - 1 : y | 0;
+    return avoid.dist[iy * avoid.w + ix] < avoid.clearance;
+  };
   const snap = BRUSH_SNAP[brush];
   const hasImage = !!buf;
   const bedrockY = Math.round((hasImage ? buf!.height : h) * p.bedrockOffset);
@@ -355,6 +445,19 @@ export function growRoots(
   const attr = buf
     ? imageAttractors(buf, bedrockY, p, count, rng)
     : soilAttractors(w, h, bedrockY, count, rng, p);
+  if (avoid) {
+    // Drop attractors inside the avoid shape so nothing is pulled into it.
+    const kx: number[] = [];
+    const ky: number[] = [];
+    for (let i = 0; i < attr.x.length; i++) {
+      if (!blocked(attr.x[i], attr.y[i])) {
+        kx.push(attr.x[i]);
+        ky.push(attr.y[i]);
+      }
+    }
+    attr.x = kx;
+    attr.y = ky;
+  }
   if (attr.x.length === 0) return { edges: [], hairs: [], bedrockY };
 
   const di = p.lateralReach;
@@ -458,7 +561,27 @@ export function growRoots(
       }
       // Snapped brushes quantise the heading to the lattice (with wobble) so
       // mains descend in hard diagonal jogs; organic follows it smoothly.
-      const a = snap ? snapAngle(dir + (rng() - 0.5) * 0.6, snap) : dir;
+      let a = snap ? snapAngle(dir + (rng() - 0.5) * 0.6, snap) : dir;
+      if (blocked(x + Math.cos(a) * D, y + Math.sin(a) * D)) {
+        // Hit the avoid shape: fan out either side for a way around it, and
+        // keep that heading so the main slides along the shape's edge.
+        let found = false;
+        const stepA = snap ? snap.q : 0.3;
+        const first = rng() < 0.5 ? 1 : -1;
+        for (let k = 1; k <= 6 && !found; k++) {
+          for (const sgn of [first, -first]) {
+            const aa = snap ? snapAngle(a + sgn * k * stepA, snap) : a + sgn * k * stepA;
+            if (!blocked(x + Math.cos(aa) * D, y + Math.sin(aa) * D)) {
+              a = aa;
+              dir = aa;
+              dv = 0;
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) return; // boxed in — this main ends here
+      }
       x += Math.cos(a) * D;
       y += Math.sin(a) * D;
       if (x < marginB) {
@@ -533,7 +656,8 @@ export function growRoots(
           ay <= bedrockY + 4 ||
           ax < marginB ||
           ax > fieldW - marginB ||
-          ay > fieldH - marginB
+          ay > fieldH - marginB ||
+          blocked(ax, ay)
         )
           continue;
         attr.x.push(ax);
@@ -633,6 +757,23 @@ export function growRoots(
       // Clamp to the soil inset (same margin as taproots): density/seed can
       // pack attractors near the rim, and without side/bottom bounds the walk
       // keeps stepping past the canvas edge.
+      if (blocked(nx + Math.cos(a) * D, ny + Math.sin(a) * D)) {
+        // Deflect around the avoid shape; if every probe is blocked, this tip
+        // waits a round (it's been turned away by the shape).
+        let found = false;
+        const stepA = snap ? snap.q : 0.35;
+        for (let k = 1; k <= 5 && !found; k++) {
+          for (const sgn of [1, -1]) {
+            const aa = snap ? snapAngle(a + sgn * k * stepA, snap) : a + sgn * k * stepA;
+            if (!blocked(nx + Math.cos(aa) * D, ny + Math.sin(aa) * D)) {
+              a = aa;
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) return;
+      }
       let nx2 = nx + Math.cos(a) * D;
       let ny2 = Math.max(bedrockY, ny + Math.sin(a) * D);
       if (nx2 < marginB) nx2 = marginB;
@@ -991,7 +1132,8 @@ export function growRoots(
           nx < marginB ||
           nx > fieldW - marginB ||
           ny < bedrockY ||
-          ny > fieldH - marginB
+          ny > fieldH - marginB ||
+          blocked(nx, ny)
         )
           break;
         // Hold full weight through the body, then ease to a point over the last
@@ -1145,7 +1287,13 @@ export function growRoots(
         ang += (rng() - 0.5) * 0.7;
         const nxp = hx + Math.cos(ang) * slen;
         const nyp = hy + Math.sin(ang) * slen;
-        if (nyp > fieldH - 4 || nyp < soilTop || nxp < 4 || nxp > fieldW - 4)
+        if (
+          nyp > fieldH - 4 ||
+          nyp < soilTop ||
+          nxp < 4 ||
+          nxp > fieldW - 4 ||
+          blocked(nxp, nyp)
+        )
           break;
         const hStart = hairT + schedRng() * slen * 0.35;
         hairT = hStart + slen * (0.35 + schedRng() * 0.55);
