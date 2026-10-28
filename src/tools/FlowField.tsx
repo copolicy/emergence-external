@@ -10,6 +10,7 @@ import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { useGuideImage } from "./guideImage";
 import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
@@ -48,6 +49,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
   } = useScrubbedParams<FlowParams>(DEFAULT_FLOW);
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
+  const guide = useGuideImage(w, h);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(true);
@@ -104,7 +106,8 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
       // preview is exactly the export.
       stampOpts,
     );
-  }, [lines, params, ink, background, growth, w, h, fade, stampOpts]);
+    guide.paintOver(ctx, safeColor(background, BG), false);
+  }, [lines, params, ink, background, growth, w, h, fade, stampOpts, guide.paintOver]);
 
   useEffect(() => {
     draw();
@@ -149,9 +152,10 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
           params.seed,
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(background, BG), true);
       },
     }),
-    [exportDims, pxScale, w, h, lines, params, ink, background, growthRef, fade, stampOpts],
+    [exportDims, pxScale, w, h, lines, params, ink, background, growthRef, fade, stampOpts, guide.paintOver],
   );
 
   const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
@@ -181,6 +185,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
     setBackground(BG);
     setFade(true);
     resetSize();
+    guide.clear();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -208,7 +213,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
       params.seed,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([guide.applySvg(svg)], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -230,6 +235,11 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
         fade,
         params.seed,
         stampOpts,
+      );
+      guide.paintOver(
+        ctx,
+        transparent ? "transparent" : safeColor(background, BG),
+        true,
       );
     }, ss).then((blob) => blob && download(blob, "png"));
   };
@@ -268,6 +278,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
 
   const controls = (
     <ToolRailControls
+      header={guide.controls}
       config={config}
       onConfigChange={setConfig}
       fade={fade}
@@ -308,7 +319,7 @@ export default function FlowField({ controlsTarget = null }: FlowFieldProps = {}
         )}
 
         <div className="specimen-tree__canvas-wrap">
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas ref={canvasRef} className="specimen-tree__canvas" {...guide.canvasProps} />
         </div>
       </section>
     </>

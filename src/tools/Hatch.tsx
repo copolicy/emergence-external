@@ -10,6 +10,7 @@ import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { useGuideImage } from "./guideImage";
 import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
@@ -50,6 +51,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(HW, HH);
+  const guide = useGuideImage(w, h);
   // `params` is the settled snapshot the canvas is built from; `liveParams`
   // tracks the cursor and drives the sliders (see useScrubbedParams).
   const {
@@ -115,7 +117,8 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
       // preview is exactly the export.
       stampOpts,
     );
-  }, [lines, ink, background, growth, w, h, fade, params.seed, stampOpts]);
+    guide.paintOver(ctx, safeColor(background, BG), false);
+  }, [lines, ink, background, growth, w, h, fade, params.seed, stampOpts, guide.paintOver]);
 
   useEffect(() => {
     draw();
@@ -158,9 +161,10 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
           params.seed,
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(background, BG), true);
       },
     }),
-    [exportDims, pxScale, w, h, lines, ink, background, growthRef, fade, params.seed, stampOpts],
+    [exportDims, pxScale, w, h, lines, ink, background, growthRef, fade, params.seed, stampOpts, guide.paintOver],
   );
 
   const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
@@ -190,6 +194,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
     setBackground(BG);
     setFade(true);
     resetSize();
+    guide.clear();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -217,7 +222,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
       params.seed,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([guide.applySvg(svg)], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -239,6 +244,11 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
         fade,
         params.seed,
         stampOpts,
+      );
+      guide.paintOver(
+        ctx,
+        transparent ? "transparent" : safeColor(background, BG),
+        true,
       );
     }, ss).then((blob) => blob && download(blob, "png"));
   };
@@ -279,6 +289,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
 
   const controls = (
     <ToolRailControls
+      header={guide.controls}
       config={config}
       onConfigChange={setConfig}
       fade={fade}
@@ -320,7 +331,7 @@ export default function Hatch({ controlsTarget = null }: HatchProps = {}) {
         )}
 
         <div className="specimen-tree__canvas-wrap">
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas ref={canvasRef} className="specimen-tree__canvas" {...guide.canvasProps} />
         </div>
       </section>
     </>

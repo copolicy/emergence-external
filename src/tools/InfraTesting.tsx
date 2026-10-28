@@ -14,6 +14,7 @@ import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { useGuideImage } from "./guideImage";
 import { stampOptsForStroke } from "./stampTreatment";
 import { buildJaggedSVG, drawJagged, type JaggedParams } from "./jaggedCore";
 import {
@@ -50,6 +51,7 @@ export default function InfraTesting({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(IW, IH);
+  const guide = useGuideImage(w, h);
   // `params` is the settled snapshot the canvas is built from; `liveParams`
   // tracks the cursor and drives the sliders (see useScrubbedParams).
   const {
@@ -110,7 +112,8 @@ export default function InfraTesting({
       params.seed,
       stampOpts,
     );
-  }, [lines, params, ink, background, growth, w, h, fade, stampOpts]);
+    guide.paintOver(ctx, safeColor(background, BG), false);
+  }, [lines, params, ink, background, growth, w, h, fade, stampOpts, guide.paintOver]);
 
   useEffect(() => {
     draw();
@@ -153,9 +156,10 @@ export default function InfraTesting({
           params.seed,
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(background, BG), true);
       },
     }),
-    [exportDims, pxScale, w, h, lines, params, ink, background, growthRef, fade, stampOpts],
+    [exportDims, pxScale, w, h, lines, params, ink, background, growthRef, fade, stampOpts, guide.paintOver],
   );
 
   const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
@@ -182,6 +186,7 @@ export default function InfraTesting({
     setBackground(BG);
     setFade(false);
     resetSize();
+    guide.clear();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -208,7 +213,7 @@ export default function InfraTesting({
       params.seed,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([guide.applySvg(svg)], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -233,6 +238,11 @@ export default function InfraTesting({
           fade,
           params.seed,
           stampOpts,
+        );
+        guide.paintOver(
+          ctx,
+          transparent ? "transparent" : safeColor(background, BG),
+          true,
         );
       },
       ss,
@@ -274,6 +284,7 @@ export default function InfraTesting({
 
   const controls = (
     <ToolRailControls
+      header={guide.controls}
       config={config}
       onConfigChange={setConfig}
       fade={fade}
@@ -317,7 +328,7 @@ export default function InfraTesting({
         )}
 
         <div className="specimen-tree__canvas-wrap">
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas ref={canvasRef} className="specimen-tree__canvas" {...guide.canvasProps} />
         </div>
       </section>
     </>

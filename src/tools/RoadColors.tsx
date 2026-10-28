@@ -14,6 +14,7 @@ import {
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
 import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
+import { useGuideImage } from "./guideImage";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
@@ -162,6 +163,9 @@ export default function RoadColors({
     ROAD_BASE,
     ROAD_BASE,
   );
+  const guide = useGuideImage(w, h);
+  const guidePaintRef = useRef(guide.paintOver);
+  guidePaintRef.current = guide.paintOver;
 
   // `weight` is the settled value the canvas is built from; `liveLine.weight`
   // tracks the cursor and drives the slider (see useScrubbedParams).
@@ -394,6 +398,7 @@ export default function RoadColors({
         } else {
           ctx.drawImage(raw, 0, 0, rw, rh, 0, 0, w, h);
         }
+        guidePaintRef.current(ctx, background, false);
 
         if (p < 1) {
           rafRef.current = requestAnimationFrame(step);
@@ -438,9 +443,10 @@ export default function RoadColors({
         // preview is exactly the export.
         stampOpts,
       );
+      guide.paintOver(ctx, safeColor(bg, BG), false);
       roadsDrawnRef.current = total;
     },
-    [w, h, bg, keepWay, renderFrame, stampOpts],
+    [w, h, bg, keepWay, renderFrame, stampOpts, guide.paintOver],
   );
 
   useEffect(() => {
@@ -471,7 +477,7 @@ export default function RoadColors({
     const d = dataRef.current;
     if (d) renderStatic(d);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, bg, view, ink, w, h, animating]);
+  }, [weight, bg, view, ink, w, h, animating, guide.paintOver]);
 
   // Load the saved Bay Area snapshot (no network round-trip to Overpass).
   const loadSaved = useCallback(async () => {
@@ -556,9 +562,10 @@ export default function RoadColors({
           safeColor(bg, BG),
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(bg, BG), true);
       },
     };
-  }, [renderFrame, exportDims, pxScale, bg, stampOpts]);
+  }, [renderFrame, exportDims, pxScale, bg, stampOpts, guide.paintOver]);
 
   // Fill-in as a seekable timeline: frame `t` shows the first `t × total` ways.
   const recordTimeline = useCallback((): RecordTimeline | null => {
@@ -652,11 +659,13 @@ export default function RoadColors({
   }, [zoomAt, w, h]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (guide.onPointerDown(e)) return;
     if (view.zoom <= 1) return;
     dragRef.current = { x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (guide.onPointerMove(e)) return;
     const d = dragRef.current;
     const canvas = canvasRef.current;
     if (!d || !canvas) return;
@@ -673,7 +682,8 @@ export default function RoadColors({
       };
     });
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (guide.onPointerUp(e)) return;
     dragRef.current = null;
   };
 
@@ -701,7 +711,7 @@ export default function RoadColors({
       exportDims.h,
       w,
       h,
-      (ctx, scale) =>
+      (ctx, scale) => {
         renderFrame(
           ctx,
           scale,
@@ -709,7 +719,13 @@ export default function RoadColors({
           total,
           transparent ? "transparent" : safeColor(bg, BG),
           stampOpts,
-        ),
+        );
+        guide.paintOver(
+          ctx,
+          transparent ? "transparent" : safeColor(bg, BG),
+          true,
+        );
+      },
       ss,
     ).then((b) => b && download(b, "png"));
   };
@@ -728,7 +744,9 @@ export default function RoadColors({
       const traced = traceStampPathD(w, h, stroke, stampOpts, (tctx) =>
         paintRoads(tctx, data, ordered, ordered.length),
       );
-      const treatedSvg = `${head}<path d="${traced}" fill="${stroke}" fill-rule="evenodd"/></svg>`;
+      const treatedSvg = guide.applySvg(
+        `${head}<path d="${traced}" fill="${stroke}" fill-rule="evenodd"/></svg>`,
+      );
       download(new Blob([treatedSvg], { type: "image/svg+xml" }), "svg");
       return;
     }
@@ -766,7 +784,7 @@ export default function RoadColors({
         body += `<g stroke="${stroke}" fill="none" stroke-linecap="round" stroke-linejoin="round">${paths}</g>`;
     }
     download(
-      new Blob([`${head}${body}</svg>`], { type: "image/svg+xml" }),
+      new Blob([guide.applySvg(`${head}${body}</svg>`)], { type: "image/svg+xml" }),
       "svg",
     );
   };
@@ -812,6 +830,7 @@ export default function RoadColors({
 
   const controls = (
     <>
+      {guide.controls}
       <div className="specimen-tree__group">
         <span className="specimen-tree__group-title">Location</span>
         <form
@@ -996,8 +1015,11 @@ export default function RoadColors({
               height: "100%",
               objectFit: "contain",
               boxShadow: "0 8px 40px rgba(0,0,0,0.18)",
-              cursor:
-                view.zoom > 1
+              cursor: guide.active
+                ? guide.dragging
+                  ? "grabbing"
+                  : "grab"
+                : view.zoom > 1
                   ? dragRef.current
                     ? "grabbing"
                     : "grab"

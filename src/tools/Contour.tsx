@@ -10,6 +10,7 @@ import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { useGuideImage } from "./guideImage";
 import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
@@ -51,6 +52,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   const [fade, setFade] = useState(true);
 
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } = useCanvasDimensions(CW, CH);
+  const guide = useGuideImage(w, h);
 
   // Stamp/cutout are render-only treatment passes — scrubbing them must not
   // re-trace the contours, so they're excluded from the deps.
@@ -103,7 +105,8 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       // preview is exactly the export.
       stampOpts,
     );
-  }, [result, ink, background, w, h, growth, fade, params.seed, stampOpts]);
+    guide.paintOver(ctx, safeColor(background, BG), false);
+  }, [result, ink, background, w, h, growth, fade, params.seed, stampOpts, guide.paintOver]);
 
   useEffect(() => {
     draw();
@@ -146,9 +149,10 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
           params.seed,
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(background, BG), true);
       },
     }),
-    [exportDims, pxScale, w, h, result, ink, background, growthRef, fade, params.seed, stampOpts],
+    [exportDims, pxScale, w, h, result, ink, background, growthRef, fade, params.seed, stampOpts, guide.paintOver],
   );
 
   const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
@@ -178,6 +182,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
     setBackground(BG);
     setFade(true);
     resetSize();
+    guide.clear();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -205,7 +210,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       params.seed,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([guide.applySvg(svg)], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -227,6 +232,11 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
         fade,
         params.seed,
         stampOpts,
+      );
+      guide.paintOver(
+        ctx,
+        transparent ? "transparent" : safeColor(background, BG),
+        true,
       );
     }, ss).then((blob) => blob && download(blob, "png"));
   };
@@ -265,6 +275,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
 
   const controls = (
     <ToolRailControls
+      header={guide.controls}
       config={config}
       onConfigChange={setConfig}
       fade={fade}
@@ -308,7 +319,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
         )}
 
         <div className="specimen-tree__canvas-wrap">
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas ref={canvasRef} className="specimen-tree__canvas" {...guide.canvasProps} />
         </div>
       </section>
     </>

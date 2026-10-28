@@ -10,6 +10,7 @@ import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
 import { safeColor } from "./specimenTreeCore";
+import { useGuideImage } from "./guideImage";
 import { stampOptsForStroke } from "./stampTreatment";
 import {
   BG,
@@ -37,6 +38,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { w, h, exportDims, pxScale, config, setConfig, resetSize } =
     useCanvasDimensions(NW, NH);
+  const guide = useGuideImage(w, h);
   // `params` is the settled snapshot the canvas is built from; `liveParams`
   // tracks the cursor and drives the sliders (see useScrubbedParams).
   const {
@@ -105,7 +107,8 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
       // preview is exactly the export.
       stampOpts,
     );
-  }, [result, params, ink, background, growth, w, h, fade, stampOpts]);
+    guide.paintOver(ctx, safeColor(background, BG), false);
+  }, [result, params, ink, background, growth, w, h, fade, stampOpts, guide.paintOver]);
 
   useEffect(() => {
     draw();
@@ -149,6 +152,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
           params.seed,
           stampOpts,
         );
+        guide.paintOver(ctx, safeColor(background, BG), true);
       },
     }),
     [
@@ -163,6 +167,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
       growthRef,
       fade,
       stampOpts,
+      guide.paintOver,
     ],
   );
 
@@ -193,6 +198,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
     setBackground(BG);
     setFade(false);
     resetSize();
+    guide.clear();
   };
 
   const download = (blob: Blob, ext: string) => {
@@ -221,7 +227,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
       params.seed,
       stampOpts,
     );
-    download(new Blob([svg], { type: "image/svg+xml" }), "svg");
+    download(new Blob([guide.applySvg(svg)], { type: "image/svg+xml" }), "svg");
   };
 
   const downloadPNG = (transparent: boolean) => {
@@ -244,6 +250,11 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
         fade,
         params.seed,
         stampOpts,
+      );
+      guide.paintOver(
+        ctx,
+        transparent ? "transparent" : safeColor(background, BG),
+        true,
       );
     }, ss).then((blob) => blob && download(blob, "png"));
   };
@@ -282,6 +293,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
 
   const controls = (
     <ToolRailControls
+      header={guide.controls}
       config={config}
       onConfigChange={setConfig}
       fade={fade}
@@ -323,7 +335,7 @@ export default function Network({ controlsTarget = null }: NetworkProps = {}) {
         )}
 
         <div className="specimen-tree__canvas-wrap">
-          <canvas ref={canvasRef} className="specimen-tree__canvas" />
+          <canvas ref={canvasRef} className="specimen-tree__canvas" {...guide.canvasProps} />
         </div>
       </section>
     </>
