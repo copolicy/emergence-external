@@ -17,9 +17,107 @@ export function useAnimProgress(initial = 1) {
   return [value, setValue, ref] as const;
 }
 
-/** Ease used by every play-in animation: fast start, soft landing. */
+/**
+ * Overall play-in curve: slow opening (~1–2s) that accelerates into a steady
+ * cruise, then a soft landing. Hermite joins keep velocity continuous so the
+ * handoff into faster growth doesn't kick.
+ */
 export function easeGrowth(p: number): number {
-  return 1 - (1 - p) * (1 - p);
+  if (p <= 0) return 0;
+  if (p >= 1) return 1;
+
+  // ~28% of wall time (≈1.3s of a 4.8s grow) covers ~18% of the drawing,
+  // ramping from a gentle open up to cruise speed by the end of the window.
+  const HEAD = 0.28;
+  const HEAD_GROWTH = 0.18;
+  const TAIL = 0.12;
+  const bulkSlope = (1 - HEAD_GROWTH) / (1 - HEAD);
+  const startSlope = bulkSlope * 0.32;
+
+  const hermite = (
+    u: number,
+    y0: number,
+    y1: number,
+    m0: number,
+    m1: number,
+  ) => {
+    const u2 = u * u;
+    const u3 = u2 * u;
+    return (
+      (2 * u3 - 3 * u2 + 1) * y0 +
+      (u3 - 2 * u2 + u) * m0 +
+      (-2 * u3 + 3 * u2) * y1 +
+      (u3 - u2) * m1
+    );
+  };
+
+  if (p <= HEAD) {
+    const u = p / HEAD;
+    // Exit slope matches cruise so speed doesn't jump at the handoff.
+    return hermite(u, 0, HEAD_GROWTH, startSlope * HEAD, bulkSlope * HEAD);
+  }
+
+  const cruiseEnd = 1 - TAIL;
+  if (p <= cruiseEnd) {
+    return HEAD_GROWTH + bulkSlope * (p - HEAD);
+  }
+
+  const y0 = HEAD_GROWTH + bulkSlope * (cruiseEnd - HEAD);
+  const u = (p - cruiseEnd) / TAIL;
+  // Ease out: arrive at 1 with zero velocity.
+  return hermite(u, y0, 1, bulkSlope * TAIL, 0);
+}
+
+/** Finished frame sits fully opaque this long at the end of an MP4, then fades. */
+export const HOLD_COMPLETE_MS = 2000;
+const FADE_OUT_MS = 400;
+// Outro eases the ink down, but not away — a light edge on the cut.
+const OUTRO_FLOOR = 0.62;
+
+function smoothstep(u: number): number {
+  const t = Math.min(1, Math.max(0, u));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Opacity envelope for the growth play-in / MP4.
+ *
+ * `p` in (0, 1) is the growth: a short fade-in, then fully opaque through the
+ * end so the finished asset can be held. `p` in (1, 2] is the MP4 outro — the
+ * ink eases down slightly and the background stays. Settled frames (`p === 1`)
+ * stay solid.
+ */
+export function growthAlpha(p: number): number {
+  if (p <= 0) return 0;
+  if (p > 1) return 1 - (1 - OUTRO_FLOOR) * smoothstep(p - 1);
+  const FADE_IN = 0.045;
+  const FLOOR = 0.72;
+  if (p < FADE_IN) return FLOOR + (1 - FLOOR) * smoothstep(p / FADE_IN);
+  return 1;
+}
+
+/**
+ * Paint `paint` at full strength through the growth, and under the MP4 outro
+ * fade once `progress` passes 1. The background is already on the canvas.
+ */
+export function withOutroFade(
+  ctx: CanvasRenderingContext2D,
+  progress: number,
+  paint: () => void,
+) {
+  if (progress <= 1) {
+    paint();
+    return;
+  }
+  const alpha = growthAlpha(progress);
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  try {
+    paint();
+  } finally {
+    ctx.restore();
+  }
 }
 
 // H.264 profile/level candidates, widest-support first. We probe each with
@@ -142,15 +240,24 @@ async function pickCodec(
  * Builds the timeline for the standard growth animation: the recorder walks
  * `growthRef` through the same ease the live rAF loop uses, then restores the
  * finished state when capture ends.
+ *
+ * When `holdMs` > 0, the first that many milliseconds stay at progress 0
+ * (empty background) before growth eases in — matching usePlayIn.
+ *
+ * After the growth finishes, the completed frame is held for
+ * `HOLD_COMPLETE_MS`, then progress walks 1→2 so `growthAlpha` fades the ink
+ * out. The live play-in never enters that range; it settles at 1.
  */
 export function useGrowthTimeline(
   durationMs: number,
   growthRef: RefObject<number>,
   setGrowth: (value: number) => void,
+  holdMs = 0,
 ): () => RecordTimeline {
   return useCallback(
     () => ({
-      durationMs,
+      durationMs:
+        durationMs + Math.max(0, holdMs) + HOLD_COMPLETE_MS + FADE_OUT_MS,
       // Full frame rate whatever the length. This used to halve to 30fps past
       // six seconds, because every captured frame is redrawn at export
       // resolution and the ink treatment made that cost ~330ms a frame, so a
@@ -159,11 +266,35 @@ export function useGrowthTimeline(
       // throwing away half the frames.
       fps: DEFAULT_FPS,
       seek: (t: number) => {
-        growthRef.current = easeGrowth(t);
+        const hold = Math.max(0, holdMs);
+        const total = durationMs + hold + HOLD_COMPLETE_MS + FADE_OUT_MS;
+        const elapsed = t * total;
+        if (elapsed < hold) {
+          growthRef.current = 0;
+          return;
+        }
+        const grown = elapsed - hold;
+        if (grown < durationMs) {
+          growthRef.current = easeGrowth(
+            Math.min(1, grown / Math.max(1, durationMs)),
+          );
+          return;
+        }
+        const after = grown - durationMs;
+        if (after < HOLD_COMPLETE_MS) {
+          growthRef.current = 1;
+          return;
+        }
+        const fadeT = Math.min(
+          1,
+          (after - HOLD_COMPLETE_MS) / Math.max(1, FADE_OUT_MS),
+        );
+        // (1, 2] is the outro. Draw code treats anything ≥ 1 as fully grown.
+        growthRef.current = 1 + fadeT;
       },
       onFinish: () => setGrowth(1),
     }),
-    [durationMs, growthRef, setGrowth],
+    [durationMs, holdMs, growthRef, setGrowth],
   );
 }
 

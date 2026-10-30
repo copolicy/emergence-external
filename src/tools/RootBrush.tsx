@@ -3,9 +3,9 @@ import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
 import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
-import { useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
+import { growthAlpha, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
-import { usePlayIn } from "../hooks/usePlayIn";
+import { HOLD_BEFORE_PLAY_MS, usePlayIn } from "../hooks/usePlayIn";
 import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -67,7 +67,8 @@ const PLACE_HINTS: Record<keyof GuidePlace, string> = {
   size: "Scale of the image on the canvas. You can also drag the canvas to move it.",
   x: "Horizontal position of the image. Drag the canvas to move it freely.",
   y: "Vertical position of the image. Drag the canvas to move it freely.",
-  clearance: "Gap the roots keep from the image. 0 lets them touch its edge.",
+  clearance:
+    "Gap the roots keep from the image. 0 lets them touch its edge; the interior stays clear either way.",
 };
 const GHOST_OPACITY = 0.3;
 
@@ -85,7 +86,7 @@ const readAsDataURL = (file: File) =>
     r.readAsDataURL(file);
   });
 
-const GROWTH_MS = 10000;
+const GROWTH_MS = 4800;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 6;
 
@@ -157,6 +158,8 @@ export default function RootBrush({
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [growing, setGrowing] = useState(false);
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
+  const [holdBeforePlay, setHoldBeforePlay] = useState(false);
+  const holdMs = holdBeforePlay ? HOLD_BEFORE_PLAY_MS : 0;
 
   // Guide image. `placeLive` follows drags/sliders instantly (the faded
   // preview moves with you); `place` is the settled copy the roots grow from,
@@ -294,6 +297,7 @@ export default function RootBrush({
       setCanvasAspectVars(canvas, w, h);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
+      const progress = progressOverride ?? growth;
       drawRoots(
         ctx,
         drawDpr,
@@ -302,7 +306,7 @@ export default function RootBrush({
         result,
         safeColor(ink, INK),
         safeColor(background, BG),
-        progressOverride ?? growth,
+        progress,
         true,
         brush,
         // Always the full treatment — never an approximation, whose breaks
@@ -310,8 +314,14 @@ export default function RootBrush({
         // play-in is exactly what the finished asset looks like at that point.
         stampOpts,
       );
+      // Hold / opening frame: empty background only — no guide over the void.
       // Guide image: full strength if it'll be exported, faded if not.
-      paintGuide(ctx, drawDpr, placeLive, includeGuide ? 1 : GHOST_OPACITY);
+      if (progress > 0) {
+        const guideAlpha =
+          (includeGuide ? 1 : GHOST_OPACITY) *
+          (progress > 1 ? growthAlpha(progress) : 1);
+        paintGuide(ctx, drawDpr, placeLive, guideAlpha);
+      }
     },
     [result, ink, background, w, h, growth, brush, isFullscreen, zoom, stampOpts, paintGuide, placeLive, includeGuide],
   );
@@ -377,7 +387,7 @@ export default function RootBrush({
     return () => ro.disconnect();
   }, [isFullscreen, scheduleDraw]);
 
-  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef);
+  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef, holdMs);
 
   const toggleGrow = () => {
     if (growing) {
@@ -408,13 +418,20 @@ export default function RootBrush({
           brush,
           stampOpts,
         );
-        if (includeGuide) paintGuide(ctx, dpr * pxScale, place, 1);
+        if (includeGuide && growthRef.current > 0) {
+          paintGuide(
+            ctx,
+            dpr * pxScale,
+            place,
+            growthRef.current > 1 ? growthAlpha(growthRef.current) : 1,
+          );
+        }
       },
     }),
     [exportDims, w, h, pxScale, result, ink, background, growthRef, brush, stampOpts, includeGuide, paintGuide, place],
   );
 
-  const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
+  const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth, holdMs);
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
     `root-brush-${brush}-${params.seed}`,
@@ -830,6 +847,8 @@ export default function RootBrush({
       playDisabled={!hasOutput}
       playLabel="Grow"
       playingLabel="Growing…"
+      holdBeforePlay={holdBeforePlay}
+      onHoldBeforePlayChange={setHoldBeforePlay}
       onReset={reset}
     />
   );

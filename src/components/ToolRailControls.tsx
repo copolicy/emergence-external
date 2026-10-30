@@ -42,6 +42,9 @@ interface ToolRailControlsProps {
   playDisabled?: boolean;
   playLabel?: string;
   playingLabel?: string;
+  /** When set, shows a toggle for a 5s empty-background hold before growth. */
+  holdBeforePlay?: boolean;
+  onHoldBeforePlayChange?: (value: boolean) => void;
   onReset: () => void;
 }
 
@@ -76,9 +79,13 @@ export default function ToolRailControls({
   playDisabled,
   playLabel = "Play",
   playingLabel = "Drawing…",
+  holdBeforePlay,
+  onHoldBeforePlayChange,
   onReset,
 }: ToolRailControlsProps) {
   const showFade = typeof fade === "boolean" && onFadeChange;
+  const showHold =
+    typeof holdBeforePlay === "boolean" && onHoldBeforePlayChange;
 
   return (
     <>
@@ -172,6 +179,17 @@ export default function ToolRailControls({
           )}
           {playing ? playingLabel : playLabel}
         </button>
+        {showHold && (
+          <button
+            type="button"
+            className={`btn${holdBeforePlay ? " is-active" : ""}`}
+            aria-pressed={holdBeforePlay}
+            title="Hold an empty background for 5 seconds before growth (Play and Record)"
+            onClick={() => onHoldBeforePlayChange(!holdBeforePlay)}
+          >
+            Hold 5s
+          </button>
+        )}
         <button type="button" className="btn" onClick={onReset}>
           <ResetIcon />
           Reset

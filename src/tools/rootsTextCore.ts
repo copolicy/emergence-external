@@ -1,3 +1,4 @@
+import { growthAlpha } from "../hooks/useCanvasRecorder";
 import { mulberry32 } from "./specimenTreeCore";
 import type { RootEdge, RootTier } from "./rootSystemCore";
 
@@ -898,15 +899,17 @@ export function drawRootsText(
   ctx.lineJoin = "round";
 
   ctx.strokeStyle = ink;
-  ctx.globalAlpha = 0.42;
+  const outro = progress > 1 ? growthAlpha(progress) : 1;
+  if (outro <= 0) return;
+  ctx.globalAlpha = outro * 0.42;
   for (const e of result.hairs) strokeRootSegment(ctx, e, progress);
 
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = outro;
   for (const e of result.edges) strokeRootSegment(ctx, e, progress);
   ctx.globalAlpha = 1;
 
   // The copy emerges as the roots close in — fades up over the last third.
-  const textAlpha = Math.max(0, Math.min(1, (progress - 0.6) / 0.4));
+  const textAlpha = Math.max(0, Math.min(1, (progress - 0.6) / 0.4)) * outro;
   drawGlyph(ctx, result.glyph, ink, textAlpha);
 }
 

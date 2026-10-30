@@ -1,3 +1,4 @@
+import { withOutroFade } from "../hooks/useCanvasRecorder";
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
 import {
@@ -318,13 +319,15 @@ export function drawMesh(
     ctx.fillRect(0, 0, w, h);
   }
 
-  if (stampActive(stamp)) {
-    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
-      paintMeshLines(tctx, w, h, lines, ink, progress, fade, fadeSeed),
-    );
-    return;
-  }
-  paintMeshLines(ctx, w, h, lines, ink, progress, fade, fadeSeed);
+  withOutroFade(ctx, progress, () => {
+    if (stampActive(stamp)) {
+      drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+        paintMeshLines(tctx, w, h, lines, ink, progress, fade, fadeSeed),
+      );
+      return;
+    }
+    paintMeshLines(ctx, w, h, lines, ink, progress, fade, fadeSeed);
+  });
 }
 
 /** Stroke every mesh run onto `ctx` (transform must already be set). */

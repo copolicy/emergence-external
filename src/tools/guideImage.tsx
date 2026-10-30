@@ -118,7 +118,7 @@ export function useGuideImage(w: number, h: number) {
   const holeHref = useMemo(() => (hole ? hole.toDataURL("image/png") : ""), [hole]);
 
   const paintOver = useCallback(
-    (ctx: CanvasRenderingContext2D, background: string, forExport: boolean) => {
+    (ctx: CanvasRenderingContext2D, background: string, forExport: boolean, opacity = 1) => {
       if (!guide || !hole) return;
       const pl = forExport ? place : placeLive;
       ctx.save();
@@ -134,7 +134,7 @@ export function useGuideImage(w: number, h: number) {
       if (alpha > 0) {
         const r = guideRect(guide, pl, w, h);
         ctx.globalCompositeOperation = "source-over";
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = alpha * opacity;
         ctx.drawImage(guide.el, r.dx, r.dy, r.dw, r.dh);
       }
       ctx.restore();

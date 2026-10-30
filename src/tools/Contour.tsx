@@ -3,9 +3,9 @@ import { createPortal } from "react-dom";
 import ParamValueInput from "../components/ParamValueInput";
 import ParamRangeTrack from "../components/ParamRangeTrack";
 import ToolRailControls from "../components/ToolRailControls";
-import { useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
+import { growthAlpha, useAnimProgress, useCanvasRecorder, useGrowthTimeline } from "../hooks/useCanvasRecorder";
 import { useCanvasDimensions } from "../hooks/useCanvasDimensions";
-import { usePlayIn } from "../hooks/usePlayIn";
+import { HOLD_BEFORE_PLAY_MS, usePlayIn } from "../hooks/usePlayIn";
 import { useScrubbedParams } from "../hooks/useScrubbedParams";
 import { setCanvasAspectVars } from "./aspectRatio";
 import { renderMagnifiedPngBlob } from "./exportCanvas";
@@ -48,6 +48,8 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
   const [ink, setInk] = useState(INK);
   const [background, setBackground] = useState(BG);
   const [growing, setGrowing] = useState(false);
+  const [holdBeforePlay, setHoldBeforePlay] = useState(false);
+  const holdMs = holdBeforePlay ? HOLD_BEFORE_PLAY_MS : 0;
   const [growth, setGrowth, growthRef] = useAnimProgress(1);
   const [fade, setFade] = useState(true);
 
@@ -118,7 +120,7 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
     drawRef.current = draw;
   });
 
-  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef);
+  usePlayIn(growing, setGrowing, GROWTH_MS, growthRef, setGrowth, drawRef, holdMs);
 
   const toggleGrow = () => {
     if (growing) {
@@ -149,13 +151,18 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
           params.seed,
           stampOpts,
         );
-        guide.paintOver(ctx, safeColor(background, BG), true);
+        guide.paintOver(
+          ctx,
+          safeColor(background, BG),
+          true,
+          growthRef.current > 1 ? growthAlpha(growthRef.current) : 1,
+        );
       },
     }),
     [exportDims, pxScale, w, h, result, ink, background, growthRef, fade, params.seed, stampOpts, guide.paintOver],
   );
 
-  const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth);
+  const recordTimeline = useGrowthTimeline(GROWTH_MS, growthRef, setGrowth, holdMs);
   const recorder = useCanvasRecorder(
     () => canvasRef.current,
     `contour-${params.seed}`,
@@ -302,6 +309,8 @@ export default function Contour({ controlsTarget = null }: ContourProps = {}) {
       playDisabled={!result.lines.length}
       playLabel="Play"
       playingLabel="Rising…"
+      holdBeforePlay={holdBeforePlay}
+      onHoldBeforePlayChange={setHoldBeforePlay}
       onReset={reset}
     />
   );

@@ -5,7 +5,7 @@
  * Gold is the highlight fill (segmented controls, switches) with text green on top.
  * Text green is the primary interactive / tool stroke accent.
  * Cream is the page ground; pale green is the generative canvas default.
- * Dark green and dark brown are print-only (CMYK, no screen hex) and are not used.
+ * Dark brown is print-only (CMYK, no screen hex) and is not used.
  *
  * Typography:
  *   - Helvetica Neue — display, UI, and body
@@ -17,6 +17,7 @@
   --c-cream: #f8f5ec;
   --c-light-gold: #e5da8e;
   --c-gold: #c0b663;
+  --c-dark-green: #00280e;
   --c-text-green: #0f3214;
   --c-mid-green: #195519;
   --c-light-green: #509137;

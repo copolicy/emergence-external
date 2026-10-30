@@ -1,3 +1,4 @@
+import { withOutroFade } from "../hooks/useCanvasRecorder";
 import { contours as d3contours } from "d3-contour";
 import { createNoise2D } from "simplex-noise";
 import { mulberry32 } from "./specimenTreeCore";
@@ -439,13 +440,15 @@ export function drawContours(
     ctx.fillRect(0, 0, w, h);
   }
 
-  if (stampActive(stamp)) {
-    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
-      paintContourLines(tctx, w, h, result, ink, progress, fade, fadeSeed),
-    );
-    return;
-  }
-  paintContourLines(ctx, w, h, result, ink, progress, fade, fadeSeed);
+  withOutroFade(ctx, progress, () => {
+    if (stampActive(stamp)) {
+      drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+        paintContourLines(tctx, w, h, result, ink, progress, fade, fadeSeed),
+      );
+      return;
+    }
+    paintContourLines(ctx, w, h, result, ink, progress, fade, fadeSeed);
+  });
 }
 
 /** Stroke every contour ring onto `ctx` (transform must already be set). */

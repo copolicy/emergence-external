@@ -1,6 +1,9 @@
 import { useEffect, type RefObject } from "react";
 import { easeGrowth } from "./useCanvasRecorder";
 
+/** Empty-background hold before a play-in / record growth begins. */
+export const HOLD_BEFORE_PLAY_MS = 5000;
+
 /**
  * Drives a tool's play-in: walks progress 0 → 1 over `durationMs` and paints
  * each frame, then settles.
@@ -16,6 +19,9 @@ import { easeGrowth } from "./useCanvasRecorder";
  * Going through state puts a full React render between every frame and lets
  * draws queue up behind each other, which is what makes a play-in advance in
  * bursts. State is written once, at the end, to settle the finished frame.
+ *
+ * When `holdMs` > 0, the canvas stays at progress 0 (empty background) for that
+ * long before growth starts — same pre-roll Record uses via useGrowthTimeline.
  */
 export function usePlayIn(
   growing: boolean,
@@ -24,6 +30,7 @@ export function usePlayIn(
   growthRef: RefObject<number>,
   setGrowth: (v: number) => void,
   drawRef: RefObject<((progress: number) => void) | undefined>,
+  holdMs = 0,
 ) {
   useEffect(() => {
     if (!growing) return;
@@ -31,7 +38,14 @@ export function usePlayIn(
     let start = 0;
     const tick = (t: number) => {
       if (!start) start = t;
-      const p = Math.min(1, (t - start) / durationMs);
+      const elapsed = t - start;
+      if (holdMs > 0 && elapsed < holdMs) {
+        growthRef.current = 0;
+        drawRef.current?.(0);
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const p = Math.min(1, (elapsed - holdMs) / durationMs);
       if (p >= 1) {
         // Settle through state so the finished frame goes down the same path
         // as any other settled render.
@@ -44,7 +58,9 @@ export function usePlayIn(
       drawRef.current?.(eased);
       raf = requestAnimationFrame(tick);
     };
+    growthRef.current = 0;
+    drawRef.current?.(0);
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [growing, durationMs, growthRef, setGrowth, setGrowing, drawRef]);
+  }, [growing, durationMs, holdMs, growthRef, setGrowth, setGrowing, drawRef]);
 }

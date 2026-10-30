@@ -2,8 +2,8 @@
 // The color controls offer exactly these swatches so canvas output (stroke and
 // background) is always on brand.
 //
-// Dark Green (CMYK 81 53 82 73) and Dark Brown (CMYK 61 64 79 76) are print
-// only and have no screen hex, so they are not offered here.
+// Dark Brown (CMYK 61 64 79 76) is print only and has no screen hex, so it is
+// not offered here.
 
 export interface BrandColor {
   name: string;
@@ -23,6 +23,7 @@ export const BRAND_PALETTE: BrandColor[] = [
   { name: "Mid Brown", hex: "#513727" },
   { name: "Text Green", hex: "#0F3214" },
   { name: "Text Brown", hex: "#371E14" },
+  { name: "Dark Green", hex: "#00280E" },
   { name: "Light Gray", hex: "#A6A6A6" },
   { name: "Dark Gray", hex: "#595959" },
   { name: "Black", hex: "#000000" },

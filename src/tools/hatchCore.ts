@@ -1,3 +1,4 @@
+import { withOutroFade } from "../hooks/useCanvasRecorder";
 import { mulberry32 } from "./specimenTreeCore";
 import { strokeFaded, svgFadedPaths } from "./dissolveFade";
 import {
@@ -420,13 +421,15 @@ export function drawHatch(
     ctx.fillRect(0, 0, w, h);
   }
 
-  if (stampActive(stamp)) {
-    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
-      paintHatchLines(tctx, lines, ink, progress, fade, fadeSeed),
-    );
-    return;
-  }
-  paintHatchLines(ctx, lines, ink, progress, fade, fadeSeed);
+  withOutroFade(ctx, progress, () => {
+    if (stampActive(stamp)) {
+      drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+        paintHatchLines(tctx, lines, ink, progress, fade, fadeSeed),
+      );
+      return;
+    }
+    paintHatchLines(ctx, lines, ink, progress, fade, fadeSeed);
+  });
 }
 
 /** Stroke every stick onto `ctx` (transform must already be set). */

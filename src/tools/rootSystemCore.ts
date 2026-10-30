@@ -1,8 +1,11 @@
+import { growthAlpha } from "../hooks/useCanvasRecorder";
 import { mulberry32 } from "./specimenTreeCore";
 import { sampleLuminance, toneAt, type LumBuffer } from "./flowFieldCore";
 import {
   drawStamped,
+  drawStampedReveal,
   stampActive,
+  stampRevealPad,
   traceStampPathD,
   type StampOpts,
 } from "./stampTreatment";
@@ -380,7 +383,8 @@ function edt1d(f: Float64Array, n: number, out: Float64Array) {
 /**
  * Build a distance field from whatever `paint` draws: any pixel with alpha
  * above ~15% counts as the shape (a photo = its rectangle, a transparent PNG
- * or SVG = its silhouette).
+ * or SVG = its silhouette). Enclosed transparent holes (badge interiors,
+ * letter counters, etc.) are filled so roots can't grow inside the shape.
  */
 export function buildAvoidDistance(
   w: number,
@@ -400,9 +404,42 @@ export function buildAvoidDistance(
   } catch {
     return out;
   }
+  const n = w * h;
+  // Opaque pixels are obstacles. Then flood-fill from the canvas border through
+  // transparent pixels: anything left unmarked is an enclosed hole → treat as
+  // obstacle too, so a hollow PNG (badge ring, "O") doesn't get roots inside.
+  const obs = new Uint8Array(n);
+  for (let i = 0; i < n; i++) obs[i] = data[i * 4 + 3] > 40 ? 1 : 0;
+  const exterior = new Uint8Array(n);
+  const stack: number[] = [];
+  const seed = (i: number) => {
+    if (i < 0 || i >= n || exterior[i] || obs[i]) return;
+    exterior[i] = 1;
+    stack.push(i);
+  };
+  for (let x = 0; x < w; x++) {
+    seed(x);
+    seed((h - 1) * w + x);
+  }
+  for (let y = 0; y < h; y++) {
+    seed(y * w);
+    seed(y * w + (w - 1));
+  }
+  while (stack.length) {
+    const i = stack.pop()!;
+    const x = i % w;
+    if (x > 0) seed(i - 1);
+    if (x + 1 < w) seed(i + 1);
+    if (i >= w) seed(i - w);
+    if (i + w < n) seed(i + w);
+  }
+  for (let i = 0; i < n; i++) {
+    if (!exterior[i]) obs[i] = 1;
+  }
+
   const INF = 1e12;
-  const f = new Float64Array(w * h);
-  for (let i = 0; i < w * h; i++) f[i] = data[i * 4 + 3] > 40 ? 0 : INF;
+  const f = new Float64Array(n);
+  for (let i = 0; i < n; i++) f[i] = obs[i] ? 0 : INF;
   const col = new Float64Array(h);
   const colOut = new Float64Array(h);
   for (let x = 0; x < w; x++) {
@@ -431,14 +468,85 @@ export function growRoots(
   avoid?: AvoidMask | null,
 ): RootResult {
   const rng = mulberry32(p.seed);
-  // True where a point is inside the avoid shape (plus its clearance band).
-  const blocked = (x: number, y: number) => {
-    if (!avoid) return false;
-    const ix = x < 0 ? 0 : x >= avoid.w ? avoid.w - 1 : x | 0;
-    const iy = y < 0 ? 0 : y >= avoid.h ? avoid.h - 1 : y | 0;
-    return avoid.dist[iy * avoid.w + ix] < avoid.clearance;
-  };
   const snap = BRUSH_SNAP[brush];
+  // Shorter steps → less angular polylines so the growing tip doesn't read as
+  // corner-to-corner stepping. BRANCH is the step the fork rate, lateral
+  // spacing, and whisker prune were tuned at, so a finer polyline does not
+  // pack more branches along the taproot.
+  const D = 3.5;
+  const BRANCH = 6;
+  const clr = avoid?.clearance ?? 0;
+  // Distance to the avoid shape (px). Far away when there's no mask.
+  const distAt = (x: number, y: number) => {
+    if (!avoid) return 1e6;
+    const ix = x < 0 ? 0 : x >= avoid.w ? avoid.w - 1 : (x | 0);
+    const iy = y < 0 ? 0 : y >= avoid.h ? avoid.h - 1 : (y | 0);
+    return avoid.dist[iy * avoid.w + ix];
+  };
+  // True inside the shape (plus clearance). `<=` so clearance 0 still keeps
+  // the opaque interior — and filled holes — empty.
+  const blocked = (x: number, y: number) => distAt(x, y) <= clr;
+  // Outward gradient of the distance field (points away from the shape).
+  const gradAt = (x: number, y: number) => {
+    const e = 2;
+    return {
+      gx: distAt(x + e, y) - distAt(x - e, y),
+      gy: distAt(x, y + e) - distAt(x, y - e),
+    };
+  };
+  /**
+   * Pick a free step heading that slides along the avoid shape instead of
+   * stopping against it. Uses the distance-field tangent so tips wrap around
+   * and keep growing on the far side.
+   */
+  const steerAround = (
+    x: number,
+    y: number,
+    preferred: number,
+    quantize: boolean,
+  ): number | null => {
+    const ok = (ang: number) =>
+      !blocked(x + Math.cos(ang) * D, y + Math.sin(ang) * D);
+    if (ok(preferred)) return preferred;
+
+    // Tangents of the distance isocontour (±90° from the outward normal).
+    const { gx, gy } = gradAt(x, y);
+    const gl = Math.hypot(gx, gy);
+    const candidates: number[] = [];
+    if (gl > 1e-6) {
+      const nx = gx / gl;
+      const ny = gy / gl;
+      // Prefer the tangent more aligned with the tip's intended heading, so a
+      // descending root slides left or right around the obstacle rather than
+      // reversing.
+      const tA = Math.atan2(nx, -ny); // (-ny, nx)
+      const tB = Math.atan2(-nx, ny); // (ny, -nx)
+      const score = (t: number) =>
+        Math.cos(t) * Math.cos(preferred) + Math.sin(t) * Math.sin(preferred);
+      const ordered = score(tA) >= score(tB) ? [tA, tB] : [tB, tA];
+      for (const t of ordered) {
+        // Slight outward bias keeps the tip from hugging so tight it digs in.
+        candidates.push(
+          Math.atan2(Math.sin(t) + ny * 0.35, Math.cos(t) + nx * 0.35),
+        );
+        candidates.push(t);
+      }
+    }
+    // Wide fan around the preferred heading as a fallback (and for flat grads).
+    const stepA = quantize && snap ? snap.q : 0.25;
+    const first = rng() < 0.5 ? 1 : -1;
+    for (let k = 1; k <= 12; k++) {
+      for (const sgn of [first, -first]) {
+        candidates.push(preferred + sgn * k * stepA);
+      }
+    }
+    for (const raw of candidates) {
+      const ang = quantize && snap ? snapAngle(raw, snap) : raw;
+      if (ok(ang)) return ang;
+    }
+    return null;
+  };
+
   const hasImage = !!buf;
   const bedrockY = Math.round((hasImage ? buf!.height : h) * p.bedrockOffset);
   const count = Math.max(50, Math.round(p.density));
@@ -455,6 +563,23 @@ export function growRoots(
         ky.push(attr.y[i]);
       }
     }
+    // Halo around the silhouette pulls colonization along the perimeter and
+    // past it — without these, tips that bounce off the near edge never get a
+    // reason to travel around to the far side.
+    const kept = kx.length;
+    const haloInner = clr + 6;
+    const haloOuter = clr + Math.max(36, Math.min(w, h) * 0.08);
+    const haloCount = Math.max(80, Math.round(count * 0.35));
+    let tries = 0;
+    while (kx.length - kept < haloCount && tries < haloCount * 40) {
+      tries++;
+      const sx = 8 + rng() * (w - 16);
+      const sy = bedrockY + 8 + rng() * Math.max(16, h - bedrockY - 24);
+      const d = distAt(sx, sy);
+      if (d < haloInner || d > haloOuter) continue;
+      kx.push(sx);
+      ky.push(sy);
+    }
     attr.x = kx;
     attr.y = ky;
   }
@@ -462,7 +587,6 @@ export function growRoots(
 
   const di = p.lateralReach;
   const dk = Math.min(9, di * 0.9);
-  const D = 6; // growth step length
   const maxIter = 1400;
   const maxNodes = 26000;
 
@@ -519,7 +643,10 @@ export function growRoots(
 
   const MAX_MAIN_DEPTH = 3; // generations of forking
   const MAX_MAIN_TIPS = 6; // total descending mains per crown
-  const splitChance = 0.06 + (1 - p.downwardBias) * 0.12;
+  // Per growth step. Scaled by D/BRANCH so the chance of a fork per pixel
+  // matches the spacing the taproot had at the coarser step.
+  const splitChance =
+    (0.06 + (1 - p.downwardBias) * 0.12) * (D / BRANCH);
   let mainTips = 0;
   // Spread cone: how far a main may lean off vertical. High downwardBias keeps
   // mains steep; low bias lets the fan splay wide. A fork's divergence becomes
@@ -546,41 +673,51 @@ export function growRoots(
     let dir = dir0;
     let dv = 0;
     let since = 0;
-    const minSeg = 5; // segments between forks (and before the first)
+    // While sliding along the guide image, the downward cone is relaxed so the
+    // main can travel sideways around it instead of dying against its face.
+    let wrapping = false;
+    // Same physical gap as 5 coarse steps, so the first fork doesn't land
+    // closer to the crown just because each step is shorter.
+    const minSeg = Math.max(5, Math.round((5 * BRANCH) / D));
     for (let s = 0; s < budget; s++) {
       since++;
       dv = dv * 0.9 + (rng() - 0.5) * 0.08; // smooth heading drift
       dir += dv;
-      // Keep the heading inside the descending spread cone (sin stays > 0).
-      if (dir < devLo) {
-        dir = devLo;
-        dv = Math.abs(dv);
-      } else if (dir > devHi) {
-        dir = devHi;
-        dv = -Math.abs(dv);
+      const nearAvoid = avoid ? distAt(x, y) < clr + D * 3 : false;
+      if (!wrapping && !nearAvoid) {
+        // Keep the heading inside the descending spread cone (sin stays > 0).
+        if (dir < devLo) {
+          dir = devLo;
+          dv = Math.abs(dv);
+        } else if (dir > devHi) {
+          dir = devHi;
+          dv = -Math.abs(dv);
+        }
+      } else if (wrapping || nearAvoid) {
+        // Still prefer downward while wrapping, but allow a full sideways swing.
+        if (dir < 0.05) {
+          dir = 0.05;
+          dv = Math.abs(dv);
+        } else if (dir > Math.PI - 0.05) {
+          dir = Math.PI - 0.05;
+          dv = -Math.abs(dv);
+        }
       }
       // Snapped brushes quantise the heading to the lattice (with wobble) so
       // mains descend in hard diagonal jogs; organic follows it smoothly.
       let a = snap ? snapAngle(dir + (rng() - 0.5) * 0.6, snap) : dir;
       if (blocked(x + Math.cos(a) * D, y + Math.sin(a) * D)) {
-        // Hit the avoid shape: fan out either side for a way around it, and
-        // keep that heading so the main slides along the shape's edge.
-        let found = false;
-        const stepA = snap ? snap.q : 0.3;
-        const first = rng() < 0.5 ? 1 : -1;
-        for (let k = 1; k <= 6 && !found; k++) {
-          for (const sgn of [first, -first]) {
-            const aa = snap ? snapAngle(a + sgn * k * stepA, snap) : a + sgn * k * stepA;
-            if (!blocked(x + Math.cos(aa) * D, y + Math.sin(aa) * D)) {
-              a = aa;
-              dir = aa;
-              dv = 0;
-              found = true;
-              break;
-            }
-          }
-        }
-        if (!found) return; // boxed in — this main ends here
+        const steered = steerAround(x, y, a, !!snap);
+        if (steered == null) return; // truly boxed in
+        a = steered;
+        dir = steered;
+        dv = 0;
+        wrapping = true;
+      } else if (wrapping && distAt(x, y) > clr + D * 4) {
+        // Clear of the shape — resume the normal downward cone.
+        wrapping = false;
+        if (dir < devLo) dir = devLo;
+        else if (dir > devHi) dir = devHi;
       }
       x += Math.cos(a) * D;
       y += Math.sin(a) * D;
@@ -593,6 +730,8 @@ export function growRoots(
         dir = Math.PI - dir;
         dv = 0;
       }
+      // Don't commit a node that landed inside the shape after side clamping.
+      if (blocked(x, y)) return;
       prev = addNode(x, y, prev, true);
       if (
         depth < MAX_MAIN_DEPTH &&
@@ -604,7 +743,7 @@ export function growRoots(
         mainTips++; // this run ends and two begin: net +1 descending tip
         const remain = budget - s - 1;
         const childBudget = Math.max(
-          8,
+          Math.round((8 * BRANCH) / D),
           Math.floor(remain * (0.7 + rng() * 0.25)),
         );
         const div = 0.4 + rng() * 0.5; // persistent divergence per child
@@ -617,10 +756,29 @@ export function growRoots(
 
   for (let c = 0; c < crownCount; c++) {
     const fx = crownCount === 1 ? 0.5 : (c + 0.5) / crownCount;
-    const cx = Math.min(
+    let cx = Math.min(
       fieldW - marginB,
       Math.max(marginB, fieldW * fx + (rng() - 0.5) * fieldW * 0.04),
     );
+    // If the guide image covers this crown site, slide sideways onto clear soil
+    // so a main doesn't start inside the shape and fill it from within.
+    if (blocked(cx, bedrockY)) {
+      let found = false;
+      for (let d = 8; d < fieldW && !found; d += 8) {
+        for (const sgn of [1, -1]) {
+          const tx = Math.min(
+            fieldW - marginB,
+            Math.max(marginB, cx + sgn * d),
+          );
+          if (!blocked(tx, bedrockY)) {
+            cx = tx;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) continue;
+    }
     const crown = addNode(cx, bedrockY, -1, true);
     mainTips = 1;
     growMain(cx, bedrockY, crown, Math.PI / 2, steps, 0);
@@ -638,7 +796,11 @@ export function growRoots(
       if (isMain[i] && parent[i] >= 0) mainNodes.push(i);
     }
     let side = 1;
-    for (let m = 0; m < mainNodes.length; m += 3) {
+    // Every ~3 coarse steps along the main, not every 3 fine nodes — otherwise
+    // the shorter step sprouts laterals almost twice as close, starting at the
+    // crown.
+    const lateralStride = Math.max(1, Math.round((3 * BRANCH) / D));
+    for (let m = 0; m < mainNodes.length; m += lateralStride) {
       const i = mainNodes[m];
       // Outward from the main's local heading, then leaned downward like a real
       // lateral angling into the soil.
@@ -756,29 +918,19 @@ export function growRoots(
       }
       // Clamp to the soil inset (same margin as taproots): density/seed can
       // pack attractors near the rim, and without side/bottom bounds the walk
-      // keeps stepping past the canvas edge.
+      // keeps stepping past the canvas edge. Near the guide image, slide along
+      // its edge so laterals wrap around instead of stalling against it.
       if (blocked(nx + Math.cos(a) * D, ny + Math.sin(a) * D)) {
-        // Deflect around the avoid shape; if every probe is blocked, this tip
-        // waits a round (it's been turned away by the shape).
-        let found = false;
-        const stepA = snap ? snap.q : 0.35;
-        for (let k = 1; k <= 5 && !found; k++) {
-          for (const sgn of [1, -1]) {
-            const aa = snap ? snapAngle(a + sgn * k * stepA, snap) : a + sgn * k * stepA;
-            if (!blocked(nx + Math.cos(aa) * D, ny + Math.sin(aa) * D)) {
-              a = aa;
-              found = true;
-              break;
-            }
-          }
-        }
-        if (!found) return;
+        const steered = steerAround(nx, ny, a, !!snap);
+        if (steered == null) return;
+        a = steered;
       }
       let nx2 = nx + Math.cos(a) * D;
       let ny2 = Math.max(bedrockY, ny + Math.sin(a) * D);
       if (nx2 < marginB) nx2 = marginB;
       else if (nx2 > fieldW - marginB) nx2 = fieldW - marginB;
       if (ny2 > fieldH - marginB) ny2 = fieldH - marginB;
+      if (blocked(nx2, ny2)) return;
       addNode(nx2, ny2, nodeIdx);
     });
 
@@ -806,8 +958,13 @@ export function growRoots(
     if (par >= 0) size[par] += size[i];
   }
 
-  // Reveal order: each segment starts when its parent finishes, so the taproot
-  // extends step-by-step and laterals sprout from joints as growth reaches them.
+  // Reveal order — constant distance/sec, branches appearing through the whole
+  // duration (not a front-loaded burst then one tendril crawling).
+  //
+  // Every segment grows at the same speed in px. Main paths start as soon as
+  // their parent tip reaches the joint, so the longest tendril runs alongside
+  // the mass from early on. Laterals may be delayed past that earliest time so
+  // new branches keep starting through the timeline instead of all near t=0.
   const children: number[][] = Array.from({ length: N }, () => []);
   for (let i = 0; i < N; i++) {
     const par = parent[i];
@@ -829,15 +986,6 @@ export function growRoots(
   }
   const maxPath = pathLen.reduce((m, v) => (v > m ? v : m), 0);
   const invMax = maxPath > 0 ? 1 / maxPath : 0;
-  const shallowCut = maxPath * 0.22;
-
-  const segmentDuration = (child: number, len: number) => {
-    const jitter = 0.68 + schedRng() * 0.72;
-    const tier = isMain[child]
-      ? 0.88 + schedRng() * 0.22
-      : 0.55 + schedRng() * 0.95;
-    return len * jitter * tier;
-  };
 
   const shuffle = (arr: number[]) => {
     for (let i = arr.length - 1; i > 0; i--) {
@@ -846,107 +994,81 @@ export function growRoots(
     }
   };
 
-  const segmentAngle = (from: number, to: number) =>
-    Math.atan2(py[to] - py[from], px[to] - px[from]);
-
-  const scheduleLaterals = (
-    node: number,
-    reachTime: number,
-    shallow: boolean,
-  ) => {
-    const latKids = children[node].filter((k) => !isMain[k]);
-    shuffle(latKids);
-    latKids.sort((a, b) => {
-      const aa = segmentAngle(node, a);
-      const ab = segmentAngle(node, b);
-      const ja = hash2(Math.round(px[a]), Math.round(py[a]), p.seed) * 0.4;
-      const jb = hash2(Math.round(px[b]), Math.round(py[b]), p.seed) * 0.4;
-      return aa + ja - (ab + jb);
-    });
-
-    let latBase = reachTime;
-    for (const k of latKids) {
-      const len = Math.hypot(px[k] - px[node], py[k] - py[node]);
-      const dur = segmentDuration(k, len);
-      const horiz = Math.abs(Math.cos(segmentAngle(node, k)));
-      const wait = shallow
-        ? schedRng() * len * (0.05 + schedRng() * 0.9)
-        : schedRng() * len * (0.25 + schedRng() * 2.75) +
-          horiz * len * schedRng() * 1.1;
-      const siblingGap =
-        schedRng() *
-        len *
-        (shallow ? 0.08 + schedRng() * 0.4 : 0.12 + schedRng() * 0.55);
-      latBase += siblingGap;
-      edgeStart[k] = latBase + wait;
-      edgeEnd[k] = edgeStart[k] + dur;
-      scheduleFrom(k, edgeEnd[k]);
-    }
-  };
-
-  const scheduleMainKids = (
-    node: number,
-    reachTime: number,
-    shallow: boolean,
-  ) => {
-    const mainKids = children[node].filter((k) => isMain[k]);
-    for (const k of mainKids) {
-      const len = Math.hypot(px[k] - px[node], py[k] - py[node]);
-      const dur = segmentDuration(k, len);
-      const gap = shallow
-        ? schedRng() * len * (0.2 + schedRng() * 1.0)
-        : schedRng() * len * (0.08 + schedRng() * 0.62);
-      const lead = schedRng() * dur * 0.12;
-      edgeStart[k] = reachTime + lead + gap;
-      edgeEnd[k] = edgeStart[k] + dur;
-      scheduleFrom(k, edgeEnd[k]);
-    }
-  };
-
-  const scheduleFrom = (node: number, reachTime: number) => {
-    if (children[node].length === 0) return;
-
-    const shallow = pathLen[node] < shallowCut;
-
-    // Near the crown: branch sideways before descending again so the
-    // opening is less uniform, but every segment still waits for its parent.
-    if (shallow) {
-      scheduleLaterals(node, reachTime, true);
-      scheduleMainKids(node, reachTime, true);
-    } else {
-      scheduleMainKids(node, reachTime, false);
-      scheduleLaterals(node, reachTime, false);
-    }
-  };
-
-  const enforcePathOrder = () => {
-    for (let i = 0; i < N; i++) {
-      for (const k of children[i]) {
-        if (edgeStart[k] < edgeEnd[i]) {
-          const dur = Math.max(1e-6, edgeEnd[k] - edgeStart[k]);
-          edgeStart[k] = edgeEnd[i];
-          edgeEnd[k] = edgeEnd[i] + dur;
-        }
-      }
-    }
-  };
-
+  // Crown offsets — small stagger so multiple plants don't ignite on one frame,
+  // but nothing like the old multi-second waits that caused holds.
+  const crownOffset = new Float64Array(N);
   const crownNodes: number[] = [];
   for (let i = 0; i < N; i++) {
     if (parent[i] < 0) crownNodes.push(i);
   }
   shuffle(crownNodes);
-  const crownSpread = steps * D * (2.5 + schedRng() * 2.0);
+  const crownSpread = Math.max(D * 2, maxPath * 0.04);
   for (let ci = 0; ci < crownNodes.length; ci++) {
-    const startAt =
+    const c = crownNodes[ci];
+    crownOffset[c] =
       crownNodes.length <= 1
         ? 0
-        : (ci / Math.max(1, crownNodes.length - 1)) * crownSpread +
-          schedRng() * crownSpread * 0.25;
-    scheduleFrom(crownNodes[ci], startAt);
+        : (ci / Math.max(1, crownNodes.length - 1)) * crownSpread;
+  }
+  // Push crown offset down each tree so pathLen-based times stay consistent.
+  const rootOf = (i: number) => {
+    let n = i;
+    while (parent[n] >= 0) n = parent[n];
+    return n;
+  };
+
+  // Pass 1: geometric schedule — duration === segment length (constant speed).
+  const laterals: number[] = [];
+  for (let i = 0; i < N; i++) {
+    const par = parent[i];
+    if (par < 0) continue;
+    const len = Math.hypot(px[i] - px[par], py[i] - py[par]);
+    const crown = crownOffset[rootOf(i)];
+    const earliest = crown + pathLen[par];
+    edgeStart[i] = earliest;
+    edgeEnd[i] = earliest + Math.max(len, 1e-6);
+    if (!isMain[i]) laterals.push(i);
   }
 
-  enforcePathOrder();
+  // Pass 2: spread lateral *starts* across the main growth window so new
+  // branches keep appearing while the long tendril is still extending. Never
+  // start before the parent tip reaches the joint.
+  laterals.sort((a, b) => edgeStart[a] - edgeStart[b] || a - b);
+  const spreadUntil = maxPath * 0.88;
+  for (let li = 0; li < laterals.length; li++) {
+    const k = laterals[li];
+    const par = parent[k];
+    if (par < 0) continue;
+    const len = Math.hypot(px[k] - px[par], py[k] - py[par]);
+    const earliest = edgeStart[k];
+    const rank =
+      laterals.length <= 1 ? 0 : li / Math.max(1, laterals.length - 1);
+    // Jitter the slot slightly so siblings don't ignite in lockstep, but keep
+    // the spread monotonic enough that the tip count stays steady.
+    const slot =
+      rank * spreadUntil + (schedRng() - 0.5) * Math.min(D * 3, maxPath * 0.02);
+    const start = Math.max(earliest, slot);
+    edgeStart[k] = start;
+    edgeEnd[k] = start + Math.max(len, 1e-6);
+  }
+
+  // Pass 3: enforce parent-before-child on the whole tree (mains + laterals
+  // that sprout from delayed laterals). Preserve each segment's duration so
+  // speed stays constant.
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (let i = 0; i < N; i++) {
+      const parentDone = parent[i] < 0 ? crownOffset[i] : edgeEnd[i];
+      for (const k of children[i]) {
+        if (edgeStart[k] + 1e-9 >= parentDone) continue;
+        const dur = Math.max(1e-6, edgeEnd[k] - edgeStart[k]);
+        edgeStart[k] = parentDone;
+        edgeEnd[k] = parentDone + dur;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
 
   let maxT = 0;
   for (let i = 0; i < N; i++) {
@@ -965,7 +1087,7 @@ export function growRoots(
     const par = parent[i];
     return par < 0 ? 0 : Math.hypot(px[i] - px[par], py[i] - py[par]);
   };
-  const MIN_TWIG = D * 6;
+  const MIN_TWIG = BRANCH * 6;
   for (let pass = 0; pass < 6; pass++) {
     const live = new Int32Array(N);
     for (let i = 0; i < N; i++) {
@@ -1219,14 +1341,20 @@ export function growRoots(
           const dMid = distFromTip + segL * ((t0 + t1) / 2);
           const ww = swellAt(dMid);
           if (ww <= base + 0.02) continue; // nothing to add out here
+          // Grow with the tip instead of popping in on a held frame.
+          // distFromTip=0 at the tip → lands at `ord`; farther back arrives earlier.
+          const swellStart = Math.max(0, ord - BALL_LEN * 0.35);
+          const span = Math.max(1e-6, ord - swellStart);
+          const u0 = 1 - Math.min(1, (distFromTip + segL * t0) / BALL_LEN);
+          const u1 = 1 - Math.min(1, (distFromTip + segL * t1) / BALL_LEN);
           edges.push({
             x1: x1 + (x2 - x1) * t0,
             y1: y1 + (y2 - y1) * t0,
             x2: x1 + (x2 - x1) * t1,
             y2: y1 + (y2 - y1) * t1,
             w: ww,
-            order: ord,
-            orderEnd: ord,
+            order: swellStart + span * Math.min(u0, u1),
+            orderEnd: swellStart + span * Math.max(u0, u1),
             tier,
           });
         }
@@ -1236,14 +1364,18 @@ export function growRoots(
         // ends). A zero-length round-capped edge renders as a filled dot.
         const ww = swellAt(distFromTip);
         if (ww > base + 0.02 && pi + 2 < poly.length) {
+          const swellStart = Math.max(0, ord - BALL_LEN * 0.35);
+          const span = Math.max(1e-6, ord - swellStart);
+          const u = 1 - Math.min(1, distFromTip / BALL_LEN);
+          const o = swellStart + span * u;
           edges.push({
             x1: x2,
             y1: y2,
             x2: x2,
             y2: y2,
             w: ww,
-            order: ord,
-            orderEnd: ord,
+            order: o,
+            orderEnd: o + 1e-4,
             tier,
             soft: true,
           });
@@ -1295,8 +1427,9 @@ export function growRoots(
           blocked(nxp, nyp)
         )
           break;
-        const hStart = hairT + schedRng() * slen * 0.35;
-        hairT = hStart + slen * (0.35 + schedRng() * 0.55);
+        // Same constant distance/sec as structural roots — no hold gaps.
+        const hStart = hairT;
+        hairT = hStart + slen;
         hairs.push({
           x1: hx,
           y1: hy,
@@ -1329,82 +1462,55 @@ export function growRoots(
     e.order *= invMaxT;
     e.orderEnd *= invMaxT;
   }
-  evenOutGrowthPace(edges, hairs);
+  stitchTipContinuity(edges);
+  stitchTipContinuity(hairs);
   return { edges, hairs, bedrockY };
 }
 
-// How far the reveal clock is pulled toward a constant rate of new ink (0 = the
-// raw schedule, 1 = perfectly even). The raw schedule measures time in root
-// LENGTH, which is not the same as ink appearing on screen: the crown's few
-// thick segments and the long tail of hair-fine tendril tips both run at their
-// own pace, so the drawing surges in the middle and then crawls through a last
-// stretch where almost nothing is left to draw. Partial rather than full, so
-// the growth still breathes — laterals still burst and lull — it just never
-// stalls.
-const PACE_EVENNESS = 0.65;
-const PACE_BINS = 256;
-
 /**
- * Re-time the reveal so ink arrives at a near-constant rate. Builds the
- * cumulative distribution of ink area over the schedule and warps the clock
- * toward it. The warp is monotonic, so parents still finish before their
- * children start, and progress 0/1 are fixed points — the finished drawing and
- * every export are untouched.
+ * Tip chains should meet exactly at their join: parent.orderEnd === child.order.
+ * Tiny schedule gaps (from lateral jitter / normalize rounding) read as a tip
+ * that stops then restarts. Snap near-continuations so growth stays continuous.
  */
-function evenOutGrowthPace(edges: RootEdge[], hairs: RootEdge[]) {
-  const bins = new Float64Array(PACE_BINS);
-  let total = 0;
-  const accumulate = (list: RootEdge[], weight: number) => {
-    for (const e of list) {
-      // Ink area, not segment count: a thick taproot step covers far more of
-      // the frame than a tendril step of the same length.
-      const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
-      const amount = len * Math.max(e.w, 0.05) * weight;
-      if (amount <= 0) continue;
-      // Spread each segment across the span it is drawn over, so a long slow
-      // segment counts as ink in flight rather than a spike at its end.
-      const lo = Math.min(1, Math.max(0, e.order));
-      const hi = Math.min(1, Math.max(lo, e.orderEnd));
-      const b0 = Math.min(PACE_BINS - 1, Math.floor(lo * PACE_BINS));
-      const b1 = Math.min(PACE_BINS - 1, Math.floor(hi * PACE_BINS));
-      const share = amount / (b1 - b0 + 1);
-      for (let b = b0; b <= b1; b++) bins[b] += share;
-      total += amount;
+function stitchTipContinuity(edges: RootEdge[]) {
+  const key = (x: number, y: number) =>
+    `${(x * 4) | 0},${(y * 4) | 0}`;
+  const byStart = new Map<string, RootEdge[]>();
+  for (const e of edges) {
+    if (e.soft) continue;
+    const k = key(e.x1, e.y1);
+    let list = byStart.get(k);
+    if (!list) {
+      list = [];
+      byStart.set(k, list);
     }
-  };
-  accumulate(edges, 1);
-  accumulate(hairs, 0.42); // drawn faint, so they read as less ink
-  if (total <= 0) return;
-
-  // cdf[i] = fraction of all ink drawn by the end of bin i.
-  const cdf = new Float64Array(PACE_BINS + 1);
-  let run = 0;
-  for (let i = 0; i < PACE_BINS; i++) {
-    run += bins[i];
-    cdf[i + 1] = run / total;
+    list.push(e);
   }
 
-  const warp = (t: number) => {
-    if (t <= 0) return 0;
-    if (t >= 1) return 1;
-    const x = t * PACE_BINS;
-    const i = Math.min(PACE_BINS - 1, Math.floor(x));
-    const f = x - i;
-    const even = cdf[i] + (cdf[i + 1] - cdf[i]) * f;
-    return t + (even - t) * PACE_EVENNESS;
-  };
+  const sorted = edges
+    .filter((e) => !e.soft)
+    .slice()
+    .sort((a, b) => a.order - b.order || a.orderEnd - b.orderEnd);
 
-  const MIN_SPAN = 1e-5;
-  for (const list of [edges, hairs]) {
-    for (const e of list) {
-      const a = warp(e.order);
-      // Never collapse a span to nothing — a segment with no span pops in whole
-      // instead of extending — but never run past the end of the clock either,
-      // or the last segment would still be mid-extension at full progress.
-      const b = Math.min(1, Math.max(warp(e.orderEnd), a + MIN_SPAN));
-      e.order = Math.min(a, b - MIN_SPAN * 0.1);
-      e.orderEnd = b;
+  for (const a of sorted) {
+    const kids = byStart.get(key(a.x2, a.y2));
+    if (!kids || kids.length === 0) continue;
+    let best: RootEdge | null = null;
+    let bestGap = Infinity;
+    for (const b of kids) {
+      if (b === a) continue;
+      const gap = b.order - a.orderEnd;
+      // Near-continuations only — not laterals that sprout later along the tip.
+      if (gap < -0.002 || gap > 0.02) continue;
+      if (Math.abs(gap) < bestGap) {
+        bestGap = Math.abs(gap);
+        best = b;
+      }
     }
+    if (!best || bestGap < 1e-6) continue;
+    const dur = Math.max(1e-6, best.orderEnd - best.order);
+    best.order = a.orderEnd;
+    best.orderEnd = Math.min(1, a.orderEnd + dur);
   }
 }
 
@@ -1424,10 +1530,7 @@ function strokeRootSegment(
   let y2 = e.y2;
   const span = e.orderEnd - e.order;
   if (span > 1e-6 && progress < e.orderEnd) {
-    // Linear: the tip advances at a constant speed along the segment. An ease
-    // inside the segment would make every one of the thousands of 6px steps
-    // shoot out and brake, which reads as a shimmer along the whole growth
-    // front rather than as easing.
+    // Linear: the tip advances at a constant speed along the segment.
     const t = (progress - e.order) / span;
     x2 = e.x1 + (e.x2 - e.x1) * t;
     y2 = e.y1 + (e.y2 - e.y1) * t;
@@ -1448,34 +1551,40 @@ function paintRootStrokes(
   ink: string,
   progress: number,
   brush: RootBrush,
+  /** Overall ink opacity (growth fade-in/out). */
+  fade = 1,
+  /** Extra stroke width (reveal masks need to cover stamp fattening). */
+  widthPad = 0,
 ) {
   const engineered = brush === "engineered";
   // Round caps on organic: they overlap to hide the seams between the many
   // little segments. The ends don't read as rounded nubs because the coil
   // tapers to ~0 width at the tip, so the cap there is effectively a point.
   // Engineered keeps butt caps for clean trace ends.
-  ctx.lineCap = engineered ? "butt" : "round";
+  // Reveal masks always use round caps so the advancing tip stays soft.
+  ctx.lineCap = widthPad > 0 || !engineered ? "round" : "butt";
   ctx.lineJoin = "round";
 
-  // Mycelial hairs — faint, drawn first so structural roots sit on top.
+  // Mycelial hairs — faint on screen; full coverage when painting a reveal mask
+  // so destination-in doesn't thin the already-treated hair ink.
   ctx.strokeStyle = ink;
-  ctx.globalAlpha = 0.42;
+  ctx.globalAlpha = widthPad > 0 ? fade : 0.42 * fade;
   for (const e of result.hairs) {
-    strokeRootSegment(ctx, e, progress);
+    strokeRootSegment(ctx, e, progress, e.w + widthPad);
   }
 
   // Structural roots — taproot + laterals. Widths (including the engineered
   // terminal swell) are baked into each edge in growRoots.
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = fade;
   for (const e of result.edges) {
-    if (!e.soft) strokeRootSegment(ctx, e, progress);
+    if (!e.soft) strokeRootSegment(ctx, e, progress, e.w + widthPad);
   }
   // Soft edges (engineered terminal swell) get round cap/join so the overlapping
   // sub-segments merge seamlessly across corners and width steps.
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const e of result.edges) {
-    if (e.soft) strokeRootSegment(ctx, e, progress);
+    if (e.soft) strokeRootSegment(ctx, e, progress, e.w + widthPad);
   }
   ctx.globalAlpha = 1;
 }
@@ -1500,14 +1609,53 @@ export function drawRoots(
     ctx.fillRect(0, 0, w, h);
   }
 
+  // Fade the ink in/out around the growth; leave the canvas background solid.
+  const alpha = growthAlpha(progress);
+  if (alpha <= 0) return;
+
   if (brush !== "organic" || !stampActive(stamp)) {
-    paintRootStrokes(ctx, result, ink, progress, brush);
+    paintRootStrokes(ctx, result, ink, progress, brush, alpha);
     return;
   }
 
-  drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
-    paintRootStrokes(tctx, result, ink, progress, brush),
-  );
+  // Stamp draws at full opacity into its buffer; fade the composited result.
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if (progress >= 1) {
+    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+      paintRootStrokes(tctx, result, ink, 1, brush, 1),
+    );
+  } else {
+    // Stamp once for the finished drawing, reveal through a progressing mask.
+    // Re-running blur+threshold every frame quantized the tip into steps.
+    const pad = stampRevealPad(stamp);
+    const e0 = result.edges[0];
+    const eN = result.edges[result.edges.length - 1];
+    const cacheKey = [
+      w,
+      h,
+      ink,
+      stamp.amount,
+      stamp.cutout,
+      stamp.lineWeight ?? 0,
+      result.edges.length,
+      result.hairs.length,
+      e0 ? `${e0.x1},${e0.y1},${e0.order}` : "0",
+      eN ? `${eN.x2},${eN.y2},${eN.orderEnd}` : "0",
+    ].join("|");
+    drawStampedReveal(
+      ctx,
+      dpr,
+      w,
+      h,
+      ink,
+      stamp,
+      cacheKey,
+      (tctx) => paintRootStrokes(tctx, result, ink, 1, brush, 1),
+      (tctx) => paintRootStrokes(tctx, result, "#000", progress, brush, 1, pad),
+    );
+  }
+  ctx.restore();
 }
 
 export function buildRootsSVG(

@@ -1,3 +1,4 @@
+import { withOutroFade } from "../hooks/useCanvasRecorder";
 import { Delaunay } from "d3-delaunay";
 import { mulberry32 } from "./specimenTreeCore";
 import { makeFade, strokeFaded, svgFadedPaths } from "./dissolveFade";
@@ -404,13 +405,15 @@ export function drawNetwork(
     ctx.fillRect(0, 0, w, h);
   }
 
-  if (stampActive(stamp)) {
-    drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
-      paintNetwork(tctx, w, h, result, p, ink, progress, fade, fadeSeed),
-    );
-    return;
-  }
-  paintNetwork(ctx, w, h, result, p, ink, progress, fade, fadeSeed);
+  withOutroFade(ctx, progress, () => {
+    if (stampActive(stamp)) {
+      drawStamped(ctx, dpr, w, h, ink, stamp, (tctx) =>
+        paintNetwork(tctx, w, h, result, p, ink, progress, fade, fadeSeed),
+      );
+      return;
+    }
+    paintNetwork(ctx, w, h, result, p, ink, progress, fade, fadeSeed);
+  });
 }
 
 /** Stroke edges + fill nodes onto `ctx` (transform must already be set). */
@@ -464,7 +467,9 @@ function paintNetwork(
     strokeFaded(ctx, draw, line.w, fadeOpts);
   }
 
-  // Nodes reveal after their incident edges start growing
+  // Nodes reveal after their incident edges start growing.
+  // Keep the outro fade (ctx.globalAlpha) instead of punching back to 1.
+  const baseAlpha = ctx.globalAlpha;
   if (p.nodeSize > 0.05 && progress > 0.15) {
     const nodeProgress = Math.min(1, (progress - 0.15) / 0.85);
     for (let i = 0; i < result.nodes.length; i++) {
@@ -474,12 +479,12 @@ function paintNetwork(
       if (appear <= 0) continue;
       let alpha = appear;
       if (fieldFade) alpha *= fieldFade.alpha(i + 10000, n.x, n.y);
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = baseAlpha * alpha;
       ctx.beginPath();
       ctx.arc(n.x, n.y, n.r * (0.55 + 0.45 * appear), 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = baseAlpha;
   }
 }
 

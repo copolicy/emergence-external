@@ -506,6 +506,100 @@ export function drawStamped(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+/**
+ * How far the stamp/cutout passes push ink past the raw stroke edge (preview
+ * px). Used to inflate growth reveal masks so fattened treated ink isn't clipped.
+ */
+export function stampRevealPad(stamp: StampOpts): number {
+  const steps = stampSteps(stamp);
+  const stampBlur = steps[0]?.blur ?? 0;
+  // Stamp dilates ~STAMP_DILATE_SIGMAS·σ; cutout can add a little fringe.
+  return Math.max(2.5, stampBlur * STAMP_DILATE_SIGMAS + 1.5);
+}
+
+// Full treated frames cached for growth reveal — stamp once, mask many times.
+let revealCacheKey = "";
+let revealCacheCanvas: HTMLCanvasElement | null = null;
+let revealCachePw = 0;
+let revealCachePh = 0;
+let revealMask: HTMLCanvasElement | null = null;
+let revealOut: HTMLCanvasElement | null = null;
+
+/**
+ * Smooth growth with stamp: run the expensive treatment ONCE for the finished
+ * drawing, then each frame reveal it through a progressing stroke mask.
+ * Re-stamping every frame hard-thresholds the tip and reads as stop-start
+ * stepping even when the schedule underneath is continuous.
+ */
+export function drawStampedReveal(
+  ctx: CanvasRenderingContext2D,
+  dpr: number,
+  w: number,
+  h: number,
+  ink: string,
+  stamp: StampOpts,
+  cacheKey: string,
+  paintFull: StampPaint,
+  paintMask: StampPaint,
+) {
+  const tDpr = TREATMENT_DPR;
+  const pw = Math.max(1, Math.round(w * tDpr));
+  const ph = Math.max(1, Math.round(h * tDpr));
+
+  if (
+    cacheKey !== revealCacheKey ||
+    !revealCacheCanvas ||
+    revealCachePw !== pw ||
+    revealCachePh !== ph
+  ) {
+    const treated = svgFilterSupported()
+      ? runStampPipelineGPU(w, h, ink, stamp, paintFull)
+      : runStampPipeline(w, h, ink, stamp, paintFull);
+    // GPU/CPU pipelines reuse their output canvas — clone so the cache is stable.
+    const held = document.createElement("canvas");
+    held.width = pw;
+    held.height = ph;
+    held.getContext("2d")!.drawImage(treated.canvas, 0, 0);
+    revealCacheCanvas = held;
+    revealCachePw = pw;
+    revealCachePh = ph;
+    revealCacheKey = cacheKey;
+  }
+
+  const mask = (revealMask ??= document.createElement("canvas"));
+  if (mask.width !== pw || mask.height !== ph) {
+    mask.width = pw;
+    mask.height = ph;
+  }
+  const mctx = mask.getContext("2d")!;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.clearRect(0, 0, pw, ph);
+  mctx.setTransform(tDpr, 0, 0, tDpr, 0, 0);
+  // Black ink on a cleared (transparent) mask; destination-in keeps treated
+  // pixels where the mask has coverage.
+  mctx.strokeStyle = "#000";
+  mctx.fillStyle = "#000";
+  paintMask(mctx);
+
+  const out = (revealOut ??= document.createElement("canvas"));
+  if (out.width !== pw || out.height !== ph) {
+    out.width = pw;
+    out.height = ph;
+  }
+  const octx = out.getContext("2d")!;
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.globalCompositeOperation = "source-over";
+  octx.clearRect(0, 0, pw, ph);
+  octx.drawImage(revealCacheCanvas, 0, 0);
+  octx.globalCompositeOperation = "destination-in";
+  octx.drawImage(mask, 0, 0);
+  octx.globalCompositeOperation = "source-over";
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  blitSteppedDown(out, pw, ph, ctx, ctx.canvas.width, ctx.canvas.height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
 export function __debugStamp(
   w: number,
   h: number,
